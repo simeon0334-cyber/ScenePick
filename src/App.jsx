@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 
 const GENRES = [
   "Action", "Comedy", "Drama", "Thriller", "Horror",
@@ -13,8 +13,8 @@ const MOODS = [
   { id: "binge", label: "Binge-worthy" },
 ];
 
-// posterHue stands in for a real poster image. When the real app is built
-// (outside this chat's sandboxed preview), this is replaced by a live TMDB poster URL.
+// posterHue is the fallback placeholder color, used only until the live
+// TMDB poster has loaded (or if the lookup fails).
 const CATALOG = [
   { title: "Talent Cage", year: 2019, type: "Movie", genres: ["Drama", "Crime"], moods: ["intense", "emotional"], imdb: 8.5, rt: 91, posterHue: 210, era: "recent", pace: "slow", runtime: "standard", ending: "bittersweet", blurb: "An ex-convict arranges a meeting with his victim's father, searching for forgiveness." },
   { title: "Night Shift", year: 2021, type: "Series", genres: ["Thriller", "Drama"], moods: ["intense", "binge"], imdb: 8.1, rt: 84, posterHue: 260, era: "recent", pace: "fast", runtime: "long", ending: "open", blurb: "A nurse uncovers a dark secret in the hospital where she works the night rounds." },
@@ -37,6 +37,85 @@ const CATALOG = [
 
 const STEPS = ["type", "genres", "moods", "pace", "era", "runtime", "ending"];
 const WATCHLIST_KEY = "scenepick_watchlist_v2";
+
+// ---------- Live data (TMDB posters + OMDb ratings) ----------
+
+const TMDB_KEY = import.meta.env.VITE_TMDB_API_KEY;
+const OMDB_KEY = import.meta.env.VITE_OMDB_API_KEY;
+const TMDB_IMG_BASE = "https://image.tmdb.org/t/p/w342";
+
+// Simple in-memory cache so we never fetch the same title twice in one session.
+const liveDataCache = new Map();
+
+async function fetchTmdbPoster(title, year, type) {
+  if (!TMDB_KEY) return null;
+  const kind = type === "Series" ? "tv" : "movie";
+  const yearParam = type === "Series" ? "first_air_date_year" : "year";
+  const url = `https://api.themoviedb.org/3/search/${kind}?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}&${yearParam}=${year}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const first = data.results && data.results[0];
+    if (first && first.poster_path) return TMDB_IMG_BASE + first.poster_path;
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function fetchOmdbRatings(title, year) {
+  if (!OMDB_KEY) return null;
+  const url = `https://www.omdbapi.com/?apikey=${OMDB_KEY}&t=${encodeURIComponent(title)}&y=${year}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.Response === "False") return null;
+    const imdb = data.imdbRating && data.imdbRating !== "N/A" ? parseFloat(data.imdbRating) : null;
+    const rtEntry = (data.Ratings || []).find((r) => r.Source === "Rotten Tomatoes");
+    const rt = rtEntry ? parseInt(rtEntry.Value, 10) : null;
+    return { imdb, rt };
+  } catch (e) {
+    return null;
+  }
+}
+
+// Fetches poster + ratings for one catalog item, with in-memory caching.
+async function fetchLiveData(item) {
+  if (liveDataCache.has(item.title)) return liveDataCache.get(item.title);
+  const [poster, ratings] = await Promise.all([
+    fetchTmdbPoster(item.title, item.year, item.type),
+    fetchOmdbRatings(item.title, item.year),
+  ]);
+  const result = {
+    poster: poster || null,
+    imdb: ratings && ratings.imdb != null ? ratings.imdb : null,
+    rt: ratings && ratings.rt != null ? ratings.rt : null,
+  };
+  liveDataCache.set(item.title, result);
+  return result;
+}
+
+// Hook: given a list of catalog items currently visible, fetches (and caches)
+// live poster + ratings for each, returning a title -> liveData map that
+// updates as results come in.
+function useLiveData(items) {
+  const [liveMap, setLiveMap] = useState({});
+  const requested = useRef(new Set());
+
+  useEffect(() => {
+    items.forEach((item) => {
+      if (requested.current.has(item.title)) return;
+      requested.current.add(item.title);
+      fetchLiveData(item).then((data) => {
+        setLiveMap((prev) => ({ ...prev, [item.title]: data }));
+      });
+    });
+  }, [items]);
+
+  return liveMap;
+}
 
 function scoreMovie(m, prefs) {
   let score = 0;
@@ -62,7 +141,16 @@ function getSimilar(movie) {
     .slice(0, 3);
 }
 
-function Poster({ hue, title }) {
+function Poster({ hue, title, imageUrl }) {
+  if (imageUrl) {
+    return (
+      <img
+        src={imageUrl}
+        alt={title}
+        style={{ width: 64, height: 92, borderRadius: 10, flexShrink: 0, objectFit: "cover", boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.05)" }}
+      />
+    );
+  }
   return (
     <div
       style={{
@@ -104,13 +192,15 @@ function Chip({ active, onClick, children, variant }) {
   );
 }
 
-function MiniCard({ m, isAdded, onAdd }) {
+function MiniCard({ m, isAdded, onAdd, live }) {
+  const imdb = live?.imdb ?? m.imdb;
+  const posterUrl = live?.poster ?? null;
   return (
     <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 12px", background: "#FFF9F3", borderRadius: 12, marginBottom: 8 }}>
-      <Poster hue={m.posterHue} title={m.title} />
+      <Poster hue={m.posterHue} title={m.title} imageUrl={posterUrl} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 14, fontWeight: 800 }}>{m.title}</div>
-        <div style={{ fontSize: 11, color: "#B5A896", fontWeight: 600, marginTop: 2 }}>{m.type} · {m.year} · ★ {m.imdb}</div>
+        <div style={{ fontSize: 11, color: "#B5A896", fontWeight: 600, marginTop: 2 }}>{m.type} · {m.year} · ★ {imdb}</div>
       </div>
       <button className={`small-btn ${isAdded ? "added" : ""}`} onClick={onAdd}>{isAdded ? "✓" : "+ Add"}</button>
     </div>
@@ -215,6 +305,11 @@ export default function ScenePick() {
     const pool = withMatch.length > 0 ? withMatch : scored;
     return pool.sort((a, b) => b.score - a.score || b.imdb - a.imdb).slice(0, 6);
   }, [showResults, prefs]);
+
+  // Fetch live posters/ratings for whatever is currently on screen.
+  const resultsLive = useLiveData(results);
+  const searchLive = useLiveData(searchResults);
+  const watchlistLive = useLiveData(sortedWatchlist);
 
   const canAdvance = () => {
     const k = STEPS[step];
@@ -382,7 +477,7 @@ export default function ScenePick() {
               <p style={{ color: "#B5A896", fontWeight: 600 }}>No titles match "{searchQuery}".</p>
             )}
             {searchResults.map((m) => (
-              <MiniCard key={m.title} m={m} isAdded={isInWatchlist(m.title)} onAdd={() => addToWatchlist(m)} />
+              <MiniCard key={m.title} m={m} isAdded={isInWatchlist(m.title)} onAdd={() => addToWatchlist(m)} live={searchLive[m.title]} />
             ))}
           </div>
         )}
@@ -390,43 +485,46 @@ export default function ScenePick() {
         {view === "quiz" && showResults && (
           <div>
             <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 20px" }}>Your picks 🍿</h1>
-            {results.map((m) => (
-              <div key={m.title} className="ticket">
-                <Poster hue={m.posterHue} title={m.title} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                    <span style={{ fontSize: 16, fontWeight: 800 }}>{m.title}</span>
-                    <button
-                      className={`small-btn ${isInWatchlist(m.title) ? "added" : ""}`}
-                      onClick={() => isInWatchlist(m.title) ? removeFromWatchlist(m.title) : addToWatchlist(m)}
-                    >
-                      {isInWatchlist(m.title) ? "✓ Added" : "+ My List"}
-                    </button>
-                  </div>
-                  <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
-                    {m.type} · {m.year} · {m.genres.join(", ")}
-                  </div>
-                  <RatingBadges imdb={m.imdb} rt={m.rt} />
-                  <div style={{ fontSize: 13, lineHeight: 1.5, color: "#6B6472", marginTop: 8 }}>{m.blurb}</div>
-                  <button
-                    onClick={() => setSimilarOpenFor(similarOpenFor === m.title ? null : m.title)}
-                    style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, marginTop: 10, cursor: "pointer" }}
-                  >
-                    {similarOpenFor === m.title ? "Hide similar ▲" : "Similar titles ▼"}
-                  </button>
-                  {similarOpenFor === m.title && (
-                    <div style={{ marginTop: 10 }}>
-                      {getSimilar(m).map((s) => (
-                        <MiniCard key={s.title} m={s} isAdded={isInWatchlist(s.title)} onAdd={() => addToWatchlist(s)} />
-                      ))}
+            {results.map((m) => {
+              const live = resultsLive[m.title];
+              const imdb = live?.imdb ?? m.imdb;
+              const rt = live?.rt ?? m.rt;
+              const posterUrl = live?.poster ?? null;
+              return (
+                <div key={m.title} className="ticket">
+                  <Poster hue={m.posterHue} title={m.title} imageUrl={posterUrl} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                      <span style={{ fontSize: 16, fontWeight: 800 }}>{m.title}</span>
+                      <button
+                        className={`small-btn ${isInWatchlist(m.title) ? "added" : ""}`}
+                        onClick={() => isInWatchlist(m.title) ? removeFromWatchlist(m.title) : addToWatchlist(m)}
+                      >
+                        {isInWatchlist(m.title) ? "✓ Added" : "+ My List"}
+                      </button>
                     </div>
-                  )}
+                    <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
+                      {m.type} · {m.year} · {m.genres.join(", ")}
+                    </div>
+                    <RatingBadges imdb={imdb} rt={rt} />
+                    <div style={{ fontSize: 13, lineHeight: 1.5, color: "#6B6472", marginTop: 8 }}>{m.blurb}</div>
+                    <button
+                      onClick={() => setSimilarOpenFor(similarOpenFor === m.title ? null : m.title)}
+                      style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, marginTop: 10, cursor: "pointer" }}
+                    >
+                      {similarOpenFor === m.title ? "Hide similar ▲" : "Similar titles ▼"}
+                    </button>
+                    {similarOpenFor === m.title && (
+                      <div style={{ marginTop: 10 }}>
+                        {getSimilar(m).map((s) => (
+                          <MiniCard key={s.title} m={s} isAdded={isInWatchlist(s.title)} onAdd={() => addToWatchlist(s)} live={resultsLive[s.title]} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
-            <p style={{ fontSize: 11, color: "#B5A896", margin: "8px 0 28px", fontWeight: 600 }}>
-              Posters shown are placeholders — real official posters load once we connect the live app to TMDB.
-            </p>
+              );
+            })}
             <div style={{ display: "flex", gap: 10 }}>
               <button className="nav-btn ghost" onClick={goBack}>Adjust answers</button>
               <button className="nav-btn primary" onClick={restart}>Start over</button>
@@ -457,25 +555,31 @@ export default function ScenePick() {
                 Nothing here yet. Go to "Discover", get some picks, and tap "+ My List" to save them here.
               </p>
             )}
-            {sortedWatchlist.map((m) => (
-              <div key={m.title} className="ticket" style={{ opacity: m.watched ? 0.6 : 1 }}>
-                <Poster hue={m.posterHue} title={m.title} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                    <span style={{ fontSize: 16, fontWeight: 800 }}>{m.title}{m.watched ? " ✓" : ""}</span>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button className="small-btn" onClick={() => toggleWatched(m.title)}>{m.watched ? "Unwatch" : "Watched"}</button>
-                      <button className="small-btn remove" onClick={() => removeFromWatchlist(m.title)}>Remove</button>
+            {sortedWatchlist.map((m) => {
+              const live = watchlistLive[m.title];
+              const imdb = live?.imdb ?? m.imdb;
+              const rt = live?.rt ?? m.rt;
+              const posterUrl = live?.poster ?? null;
+              return (
+                <div key={m.title} className="ticket" style={{ opacity: m.watched ? 0.6 : 1 }}>
+                  <Poster hue={m.posterHue} title={m.title} imageUrl={posterUrl} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                      <span style={{ fontSize: 16, fontWeight: 800 }}>{m.title}{m.watched ? " ✓" : ""}</span>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button className="small-btn" onClick={() => toggleWatched(m.title)}>{m.watched ? "Unwatch" : "Watched"}</button>
+                        <button className="small-btn remove" onClick={() => removeFromWatchlist(m.title)}>Remove</button>
+                      </div>
                     </div>
+                    <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
+                      {m.type} · {m.year} · {m.genres.join(", ")}
+                    </div>
+                    <RatingBadges imdb={imdb} rt={rt} />
+                    <OverallRating value={m.myRating || 0} onChange={(v) => setMyRating(m.title, v)} />
                   </div>
-                  <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
-                    {m.type} · {m.year} · {m.genres.join(", ")}
-                  </div>
-                  <RatingBadges imdb={m.imdb} rt={m.rt} />
-                  <OverallRating value={m.myRating || 0} onChange={(v) => setMyRating(m.title, v)} />
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
