@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo } from "react";
 
 const GENRES = [
   "Action", "Comedy", "Drama", "Thriller", "Horror",
@@ -13,141 +13,155 @@ const MOODS = [
   { id: "binge", label: "Binge-worthy" },
 ];
 
-// posterHue is the fallback placeholder color, used only until the live
-// TMDB poster has loaded (or if the lookup fails).
-const CATALOG = [
-  { title: "Talent Cage", year: 2019, type: "Movie", genres: ["Drama", "Crime"], moods: ["intense", "emotional"], imdb: 8.5, rt: 91, posterHue: 210, era: "recent", pace: "slow", runtime: "standard", ending: "bittersweet", blurb: "An ex-convict arranges a meeting with his victim's father, searching for forgiveness." },
-  { title: "Night Shift", year: 2021, type: "Series", genres: ["Thriller", "Drama"], moods: ["intense", "binge"], imdb: 8.1, rt: 84, posterHue: 260, era: "recent", pace: "fast", runtime: "long", ending: "open", blurb: "A nurse uncovers a dark secret in the hospital where she works the night rounds." },
-  { title: "Two Coffees", year: 2018, type: "Movie", genres: ["Romance", "Comedy"], moods: ["light", "short"], imdb: 7.2, rt: 76, posterHue: 20, era: "recent", pace: "slow", runtime: "short", ending: "happy", blurb: "Two strangers keep meeting at the same coffee shop every morning and slowly fall for each other." },
-  { title: "Storm's Edge", year: 2022, type: "Movie", genres: ["Action", "Thriller"], moods: ["intense", "short"], imdb: 7.8, rt: 80, posterHue: 195, era: "recent", pace: "fast", runtime: "short", ending: "happy", blurb: "A rescue crew races against time as a superstorm closes in on the coast." },
-  { title: "Synapses", year: 2020, type: "Series", genres: ["Sci-Fi", "Drama"], moods: ["emotional", "binge"], imdb: 8.9, rt: 96, posterHue: 280, era: "recent", pace: "slow", runtime: "long", ending: "bittersweet", blurb: "A scientist finds a way to transfer memories between people — with unpredictable consequences." },
-  { title: "The Small Orchestra", year: 2017, type: "Movie", genres: ["Comedy", "Drama"], moods: ["light", "emotional"], imdb: 7.6, rt: 88, posterHue: 40, era: "2000s2010s", pace: "slow", runtime: "standard", ending: "happy", blurb: "A group of retired musicians decides to play together again, no matter what." },
-  { title: "Dark Side of Town", year: 2023, type: "Series", genres: ["Crime", "Thriller"], moods: ["intense", "binge"], imdb: 8.3, rt: 87, posterHue: 230, era: "recent", pace: "fast", runtime: "long", ending: "open", blurb: "A detective investigates a string of disappearances tied to the city's political elite." },
-  { title: "Paper Boats", year: 2016, type: "Animation", genres: ["Animation", "Drama"], moods: ["emotional", "short"], imdb: 8.0, rt: 93, posterHue: 160, era: "2000s2010s", pace: "slow", runtime: "short", ending: "bittersweet", blurb: "A girl sends paper boats down a river, each one carrying a memory from her childhood." },
-  { title: "The Last Train", year: 2021, type: "Movie", genres: ["Horror", "Thriller"], moods: ["intense", "short"], imdb: 6.9, rt: 64, posterHue: 0, era: "recent", pace: "fast", runtime: "short", ending: "open", blurb: "Passengers on a night train realize they aren't alone between the cars." },
-  { title: "Common Ground", year: 2019, type: "Documentary", genres: ["Documentary"], moods: ["emotional", "binge"], imdb: 8.4, rt: 97, posterHue: 100, era: "recent", pace: "slow", runtime: "standard", ending: "bittersweet", blurb: "A look at the lives of teachers in remote villages, told through their own eyes." },
-  { title: "Second Try", year: 2022, type: "Movie", genres: ["Romance", "Drama"], moods: ["emotional", "short"], imdb: 7.4, rt: 79, posterHue: 330, era: "recent", pace: "slow", runtime: "standard", ending: "happy", blurb: "A couple reunites ten years after their breakup, at a mutual friend's wedding." },
-  { title: "Code: Silence", year: 2020, type: "Series", genres: ["Thriller", "Sci-Fi"], moods: ["intense", "binge"], imdb: 8.6, rt: 90, posterHue: 250, era: "recent", pace: "fast", runtime: "long", ending: "open", blurb: "A hacker uncovers a government surveillance program hidden inside an everyday app." },
-  { title: "Summer in Sozopol", year: 2015, type: "Movie", genres: ["Comedy", "Romance"], moods: ["light", "short"], imdb: 7.0, rt: 72, posterHue: 45, era: "2000s2010s", pace: "slow", runtime: "short", ending: "happy", blurb: "A group of friends spends their last student summer on the coast." },
-  { title: "Ash and Salt", year: 2023, type: "Movie", genres: ["Drama", "Crime"], moods: ["intense", "emotional"], imdb: 8.2, rt: 86, posterHue: 15, era: "recent", pace: "slow", runtime: "standard", ending: "bittersweet", blurb: "A former firefighter returns to his hometown to investigate his brother's death." },
-  { title: "Pocket Worlds", year: 2018, type: "Animation", genres: ["Animation", "Sci-Fi", "Comedy"], moods: ["light", "binge"], imdb: 8.7, rt: 95, posterHue: 175, era: "2000s2010s", pace: "fast", runtime: "standard", ending: "happy", blurb: "A kid discovers that every pocket in his grandfather's old coat leads to a different world." },
-  { title: "Midnight Reel", year: 1997, type: "Movie", genres: ["Drama", "Romance"], moods: ["emotional", "short"], imdb: 8.0, rt: 89, posterHue: 260, era: "classic", pace: "slow", runtime: "standard", ending: "bittersweet", blurb: "A projectionist falls for a regular who visits the same theater every Friday night." },
-  { title: "The Long Watch", year: 1985, type: "Movie", genres: ["Thriller", "Crime"], moods: ["intense", "binge"], imdb: 8.1, rt: 92, posterHue: 30, era: "classic", pace: "slow", runtime: "long", ending: "open", blurb: "A retired detective is pulled back for one last case that hits closer to home than he expects." },
-];
+const MOVIE_GENRE_IDS = {
+  Action: 28, Comedy: 35, Drama: 18, Thriller: 53, Horror: 27,
+  Romance: 10749, "Sci-Fi": 878, Animation: 16, Crime: 80, Documentary: 99,
+};
+const TV_GENRE_IDS = {
+  Action: 10759, Comedy: 35, Drama: 18, "Sci-Fi": 10765, Animation: 16, Crime: 80, Documentary: 99,
+};
+const ALL_GENRE_NAMES = {
+  ...Object.fromEntries(Object.entries(MOVIE_GENRE_IDS).map(([k, v]) => [v, k])),
+  ...Object.fromEntries(Object.entries(TV_GENRE_IDS).map(([k, v]) => [v, k])),
+};
+
+const MOOD_GENRE_BOOST = {
+  light: ["Comedy", "Animation"],
+  intense: ["Thriller", "Horror", "Crime", "Action"],
+  emotional: ["Drama", "Romance"],
+};
+const PACE_GENRE_BOOST = {
+  slow: ["Drama", "Romance", "Documentary"],
+  fast: ["Action", "Thriller", "Horror"],
+};
 
 const STEPS = ["type", "genres", "moods", "pace", "era", "runtime", "ending"];
-const WATCHLIST_KEY = "scenepick_watchlist_v2";
+const KEYS_STORAGE = "scenepick_api_keys_v1";
+const WATCHLIST_KEY = "scenepick_watchlist_v3";
+const POSTER_BASE = "https://image.tmdb.org/t/p/w342";
 
-// ---------- Live data (TMDB posters + OMDb ratings) ----------
-
-const TMDB_KEY = import.meta.env.VITE_TMDB_API_KEY;
-const OMDB_KEY = import.meta.env.VITE_OMDB_API_KEY;
-const TMDB_IMG_BASE = "https://image.tmdb.org/t/p/w342";
-
-// Simple in-memory cache so we never fetch the same title twice in one session.
-const liveDataCache = new Map();
-
-async function fetchTmdbPoster(title, year, type) {
-  if (!TMDB_KEY) return null;
-  const kind = type === "Series" ? "tv" : "movie";
-  const yearParam = type === "Series" ? "first_air_date_year" : "year";
-  const url = `https://api.themoviedb.org/3/search/${kind}?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}&${yearParam}=${year}`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const data = await res.json();
-    const first = data.results && data.results[0];
-    if (first && first.poster_path) return TMDB_IMG_BASE + first.poster_path;
-    return null;
-  } catch (e) {
-    return null;
-  }
+function eraDateRange(era) {
+  if (era === "classic") return { lte: "1999-12-31" };
+  if (era === "2000s2010s") return { gte: "2000-01-01", lte: "2019-12-31" };
+  if (era === "recent") return { gte: "2020-01-01" };
+  return {};
+}
+function runtimeRange(rt) {
+  if (rt === "short") return { lte: 100 };
+  if (rt === "standard") return { gte: 90, lte: 150 };
+  if (rt === "long") return { gte: 140 };
+  return {};
+}
+function singleSelected(arr) {
+  const real = arr.filter((x) => x !== "surprise");
+  return real.length === 1 ? real[0] : null;
 }
 
-async function fetchOmdbRatings(title, year) {
-  if (!OMDB_KEY) return null;
-  const url = `https://www.omdbapi.com/?apikey=${OMDB_KEY}&t=${encodeURIComponent(title)}&y=${year}`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (data.Response === "False") return null;
-    const imdb = data.imdbRating && data.imdbRating !== "N/A" ? parseFloat(data.imdbRating) : null;
-    const rtEntry = (data.Ratings || []).find((r) => r.Source === "Rotten Tomatoes");
-    const rt = rtEntry ? parseInt(rtEntry.Value, 10) : null;
-    return { imdb, rt };
-  } catch (e) {
-    return null;
-  }
-}
-
-// Fetches poster + ratings for one catalog item, with in-memory caching.
-async function fetchLiveData(item) {
-  if (liveDataCache.has(item.title)) return liveDataCache.get(item.title);
-  const [poster, ratings] = await Promise.all([
-    fetchTmdbPoster(item.title, item.year, item.type),
-    fetchOmdbRatings(item.title, item.year),
-  ]);
-  const result = {
-    poster: poster || null,
-    imdb: ratings && ratings.imdb != null ? ratings.imdb : null,
-    rt: ratings && ratings.rt != null ? ratings.rt : null,
+function mapResult(r, kind) {
+  return {
+    tmdbId: r.id,
+    type: kind === "movie" ? "Movie" : "Series",
+    title: kind === "movie" ? r.title : r.name,
+    year: (kind === "movie" ? r.release_date : r.first_air_date || "").slice(0, 4) || "—",
+    genres: (r.genre_ids || []).map((id) => ALL_GENRE_NAMES[id]).filter(Boolean),
+    overview: r.overview || "No description available.",
+    posterPath: r.poster_path,
+    tmdbVote: r.vote_average || 0,
   };
-  liveDataCache.set(item.title, result);
-  return result;
 }
 
-// Hook: given a list of catalog items currently visible, fetches (and caches)
-// live poster + ratings for each, returning a title -> liveData map that
-// updates as results come in.
-function useLiveData(items) {
-  const [liveMap, setLiveMap] = useState({});
-  const requested = useRef(new Set());
+async function fetchDiscover({ tmdbKey, kind, prefs }) {
+  const genreMap = kind === "movie" ? MOVIE_GENRE_IDS : TV_GENRE_IDS;
+  const ids = prefs.genres.map((g) => genreMap[g]).filter(Boolean);
+  const params = new URLSearchParams({
+    api_key: tmdbKey,
+    sort_by: "vote_average.desc",
+    "vote_count.gte": "150",
+    language: "en-US",
+    page: "1",
+  });
+  if (ids.length > 0) params.set("with_genres", ids.join("|"));
 
-  useEffect(() => {
-    items.forEach((item) => {
-      if (requested.current.has(item.title)) return;
-      requested.current.add(item.title);
-      fetchLiveData(item).then((data) => {
-        setLiveMap((prev) => ({ ...prev, [item.title]: data }));
-      });
-    });
-  }, [items]);
+  const era = singleSelected(prefs.era);
+  if (era) {
+    const range = eraDateRange(era);
+    const field = kind === "movie" ? "primary_release_date" : "first_air_date";
+    if (range.gte) params.set(`${field}.gte`, range.gte);
+    if (range.lte) params.set(`${field}.lte`, range.lte);
+  }
+  if (kind === "movie") {
+    const rtPref = singleSelected(prefs.runtime);
+    if (rtPref) {
+      const range = runtimeRange(rtPref);
+      if (range.gte) params.set("with_runtime.gte", String(range.gte));
+      if (range.lte) params.set("with_runtime.lte", String(range.lte));
+    }
+  }
 
-  return liveMap;
+  const res = await fetch(`https://api.themoviedb.org/3/discover/${kind}?${params.toString()}`);
+  if (!res.ok) throw new Error(`TMDB ${kind} discover failed (${res.status}). Check your TMDB API key.`);
+  const data = await res.json();
+  return (data.results || []).map((r) => mapResult(r, kind));
 }
 
-function scoreMovie(m, prefs) {
-  let score = 0;
-  prefs.genres.forEach((g) => { if (m.genres.includes(g)) score += 2; });
-  prefs.moods.forEach((mo) => { if (m.moods.includes(mo)) score += 3; });
-  if (prefs.pace.length > 0 && !prefs.pace.includes("surprise") && prefs.pace.includes(m.pace)) score += 2;
-  if (prefs.era.length > 0 && !prefs.era.includes("surprise") && prefs.era.includes(m.era)) score += 2;
-  if (prefs.runtime.length > 0 && !prefs.runtime.includes("surprise") && prefs.runtime.includes(m.runtime)) score += 2;
-  if (prefs.ending.length > 0 && !prefs.ending.includes("surprise") && prefs.ending.includes(m.ending)) score += 2;
-  return score;
+async function fetchSimilar({ tmdbKey, tmdbId, kind }) {
+  const path = kind === "Movie" ? "movie" : "tv";
+  const res = await fetch(`https://api.themoviedb.org/3/${path}/${tmdbId}/similar?api_key=${tmdbKey}&language=en-US&page=1`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data.results || []).slice(0, 3).map((r) => mapResult(r, path));
 }
 
-function passesHardFilters(m, prefs) {
-  if (prefs.type === "movie" && m.type === "Series") return false;
-  if (prefs.type === "series" && m.type !== "Series") return false;
-  return true;
+async function searchTitles({ tmdbKey, query }) {
+  const res = await fetch(`https://api.themoviedb.org/3/search/multi?api_key=${tmdbKey}&language=en-US&query=${encodeURIComponent(query)}&page=1`);
+  if (!res.ok) throw new Error("Search failed. Check your TMDB API key.");
+  const data = await res.json();
+  return (data.results || [])
+    .filter((r) => r.media_type === "movie" || r.media_type === "tv")
+    .slice(0, 10)
+    .map((r) => mapResult(r, r.media_type));
 }
 
-function getSimilar(movie) {
-  return CATALOG
-    .filter((m) => m.title !== movie.title && m.genres.some((g) => movie.genres.includes(g)))
-    .sort((a, b) => b.imdb - a.imdb)
-    .slice(0, 3);
+function rerankScore(item, prefs) {
+  let bonus = 0;
+  prefs.moods.forEach((m) => {
+    if (MOOD_GENRE_BOOST[m] && item.genres.some((g) => MOOD_GENRE_BOOST[m].includes(g))) bonus += 2;
+    if (m === "binge" && item.type === "Series") bonus += 2;
+  });
+  prefs.pace.forEach((p) => {
+    if (PACE_GENRE_BOOST[p] && item.genres.some((g) => PACE_GENRE_BOOST[p].includes(g))) bonus += 2;
+  });
+  return bonus + item.tmdbVote;
 }
 
-function Poster({ hue, title, imageUrl }) {
-  if (imageUrl) {
+async function enrichWithRatings(item, tmdbKey, omdbKey) {
+  try {
+    const detailRes = await fetch(
+      `https://api.themoviedb.org/3/${item.type === "Movie" ? "movie" : "tv"}/${item.tmdbId}?api_key=${tmdbKey}&append_to_response=external_ids`
+    );
+    const detail = await detailRes.json();
+    const imdbId = detail.external_ids?.imdb_id;
+    let imdb = null, rt = null;
+    if (imdbId && omdbKey) {
+      const omdbRes = await fetch(`https://www.omdbapi.com/?apikey=${omdbKey}&i=${imdbId}`);
+      const omdb = await omdbRes.json();
+      if (omdb.imdbRating && omdb.imdbRating !== "N/A") imdb = parseFloat(omdb.imdbRating);
+      const rtEntry = (omdb.Ratings || []).find((r) => r.Source === "Rotten Tomatoes");
+      if (rtEntry) rt = parseInt(rtEntry.Value, 10);
+    }
+    return { ...item, imdb, rt };
+  } catch (e) {
+    return { ...item, imdb: null, rt: null };
+  }
+}
+
+function Poster({ posterPath, title }) {
+  if (posterPath) {
     return (
       <img
-        src={imageUrl}
+        src={`${POSTER_BASE}${posterPath}`}
         alt={title}
-        style={{ width: 64, height: 92, borderRadius: 10, flexShrink: 0, objectFit: "cover", boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.05)" }}
+        style={{ width: 64, height: 92, borderRadius: 10, objectFit: "cover", flexShrink: 0, background: "#EFE3D8" }}
       />
     );
   }
@@ -155,15 +169,14 @@ function Poster({ hue, title, imageUrl }) {
     <div
       style={{
         width: 64, height: 92, borderRadius: 10, flexShrink: 0,
-        background: `linear-gradient(160deg, hsl(${hue},70%,72%), hsl(${hue},60%,56%))`,
+        background: "linear-gradient(160deg, #E8D9C8, #D9C4AC)",
         display: "flex", alignItems: "center", justifyContent: "center",
-        boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.05)",
       }}
-      title={`Poster placeholder for ${title}`}
+      title={`No poster for ${title}`}
     >
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" opacity="0.65">
-        <path d="M4 4h16v16H4V4z" stroke="#FFFFFF" strokeWidth="1.6" />
-        <path d="M4 15l4-4 3 3 5-6 4 5" stroke="#FFFFFF" strokeWidth="1.6" />
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" opacity="0.5">
+        <path d="M4 4h16v16H4V4z" stroke="#6B6472" strokeWidth="1.6" />
+        <path d="M4 15l4-4 3 3 5-6 4 5" stroke="#6B6472" strokeWidth="1.6" />
       </svg>
     </div>
   );
@@ -174,11 +187,11 @@ function RatingBadges({ imdb, rt }) {
     <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 4, fontFamily: "-apple-system, sans-serif", fontSize: 11 }}>
         <span style={{ background: "#F5C518", color: "#2E2A33", fontWeight: 800, padding: "1px 5px", borderRadius: 4, fontSize: 10 }}>IMDb</span>
-        <span style={{ color: "#6B6472", fontWeight: 600 }}>{imdb}</span>
+        <span style={{ color: "#6B6472", fontWeight: 600 }}>{imdb != null ? imdb : "—"}</span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 4, fontFamily: "-apple-system, sans-serif", fontSize: 11 }}>
-        <span>{rt >= 60 ? "🍅" : "🟢"}</span>
-        <span style={{ color: "#6B6472", fontWeight: 600 }}>{rt}%</span>
+        <span>{rt != null ? (rt >= 60 ? "🍅" : "🟢") : "—"}</span>
+        <span style={{ color: "#6B6472", fontWeight: 600 }}>{rt != null ? `${rt}%` : "—"}</span>
       </div>
     </div>
   );
@@ -192,15 +205,13 @@ function Chip({ active, onClick, children, variant }) {
   );
 }
 
-function MiniCard({ m, isAdded, onAdd, live }) {
-  const imdb = live?.imdb ?? m.imdb;
-  const posterUrl = live?.poster ?? null;
+function MiniCard({ m, isAdded, onAdd }) {
   return (
     <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 12px", background: "#FFF9F3", borderRadius: 12, marginBottom: 8 }}>
-      <Poster hue={m.posterHue} title={m.title} imageUrl={posterUrl} />
+      <Poster posterPath={m.posterPath} title={m.title} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 14, fontWeight: 800 }}>{m.title}</div>
-        <div style={{ fontSize: 11, color: "#B5A896", fontWeight: 600, marginTop: 2 }}>{m.type} · {m.year} · ★ {imdb}</div>
+        <div style={{ fontSize: 11, color: "#B5A896", fontWeight: 600, marginTop: 2 }}>{m.type} · {m.year}</div>
       </div>
       <button className={`small-btn ${isAdded ? "added" : ""}`} onClick={onAdd}>{isAdded ? "✓" : "+ Add"}</button>
     </div>
@@ -233,15 +244,29 @@ function OverallRating({ value, onChange }) {
   );
 }
 
-export default function ScenePick() {
+export default function App() {
+  const [keys, setKeys] = useState({ tmdb: "", omdb: "" });
+  const [keyInputs, setKeyInputs] = useState({ tmdb: "", omdb: "" });
+  const [showKeyForm, setShowKeyForm] = useState(false);
+  const [keysLoaded, setKeysLoaded] = useState(false);
+
   const [view, setView] = useState("quiz");
   const [step, setStep] = useState(0);
   const [showResults, setShowResults] = useState(false);
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
   const [watchlist, setWatchlist] = useState([]);
-  const [loaded, setLoaded] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [watchlistLoaded, setWatchlistLoaded] = useState(false);
   const [watchlistSort, setWatchlistSort] = useState("added");
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+
   const [similarOpenFor, setSimilarOpenFor] = useState(null);
+  const [similarItems, setSimilarItems] = useState({});
 
   const [prefs, setPrefs] = useState({
     type: "either", genres: [], moods: [], pace: [], era: [], runtime: [], ending: [],
@@ -249,43 +274,67 @@ export default function ScenePick() {
 
   useEffect(() => {
     try {
+      const raw = localStorage.getItem(KEYS_STORAGE);
+      if (raw) setKeys(JSON.parse(raw));
+      else setShowKeyForm(true);
+    } catch (e) {
+      setShowKeyForm(true);
+    } finally {
+      setKeysLoaded(true);
+    }
+    try {
       const raw = localStorage.getItem(WATCHLIST_KEY);
       if (raw) setWatchlist(JSON.parse(raw));
     } catch (e) {
       // no saved watchlist yet
     } finally {
-      setLoaded(true);
+      setWatchlistLoaded(true);
     }
   }, []);
 
-  const saveWatchlist = (next) => {
-    setWatchlist(next);
-    try {
-      localStorage.setItem(WATCHLIST_KEY, JSON.stringify(next));
-    } catch (e) {
-      console.error("Could not save watchlist", e);
-    }
+  const saveKeys = () => {
+    const next = { tmdb: keyInputs.tmdb.trim(), omdb: keyInputs.omdb.trim() };
+    setKeys(next);
+    setShowKeyForm(false);
+    localStorage.setItem(KEYS_STORAGE, JSON.stringify(next));
   };
 
-  const isInWatchlist = (title) => watchlist.some((w) => w.title === title);
-  const addToWatchlist = (movie) => { if (!isInWatchlist(movie.title)) saveWatchlist([...watchlist, { ...movie, myRating: 0, watched: false, addedAt: Date.now() }]); };
-  const removeFromWatchlist = (title) => saveWatchlist(watchlist.filter((w) => w.title !== title));
-  const setMyRating = (title, rating) => saveWatchlist(watchlist.map((w) => (w.title === title ? { ...w, myRating: rating } : w)));
-  const toggleWatched = (title) => saveWatchlist(watchlist.map((w) => (w.title === title ? { ...w, watched: !w.watched } : w)));
+  const saveWatchlist = (next) => {
+    setWatchlist(next);
+    localStorage.setItem(WATCHLIST_KEY, JSON.stringify(next));
+  };
+  const isInWatchlist = (id) => watchlist.some((w) => w.tmdbId === id);
+  const addToWatchlist = (item) => {
+    if (isInWatchlist(item.tmdbId)) return;
+    saveWatchlist([...watchlist, { ...item, myRating: 0, watched: false, addedAt: Date.now() }]);
+  };
+  const removeFromWatchlist = (id) => saveWatchlist(watchlist.filter((w) => w.tmdbId !== id));
+  const setMyRating = (id, rating) => saveWatchlist(watchlist.map((w) => (w.tmdbId === id ? { ...w, myRating: rating } : w)));
+  const toggleWatched = (id) => saveWatchlist(watchlist.map((w) => (w.tmdbId === id ? { ...w, watched: !w.watched } : w)));
 
   const sortedWatchlist = useMemo(() => {
     const list = [...watchlist];
     if (watchlistSort === "rating") return list.sort((a, b) => (b.myRating || 0) - (a.myRating || 0));
-    if (watchlistSort === "year") return list.sort((a, b) => b.year - a.year);
+    if (watchlistSort === "year") return list.sort((a, b) => (b.year || 0) - (a.year || 0));
     if (watchlistSort === "title") return list.sort((a, b) => a.title.localeCompare(b.title));
     return list.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
   }, [watchlist, watchlistSort]);
 
-  const searchResults = useMemo(() => {
-    if (!searchQuery.trim()) return [];
-    const q = searchQuery.trim().toLowerCase();
-    return CATALOG.filter((m) => m.title.toLowerCase().includes(q)).slice(0, 8);
-  }, [searchQuery]);
+  useEffect(() => {
+    if (!searchQuery.trim() || !keys.tmdb) { setSearchResults([]); return; }
+    const handle = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const r = await searchTitles({ tmdbKey: keys.tmdb, query: searchQuery.trim() });
+        setSearchResults(r);
+      } catch (e) {
+        setSearchResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 450);
+    return () => clearTimeout(handle);
+  }, [searchQuery, keys.tmdb]);
 
   const toggleGenre = (g) => setPrefs((p) => ({ ...p, genres: p.genres.includes(g) ? p.genres.filter((x) => x !== g) : [...p.genres, g] }));
   const toggleMood = (m) => setPrefs((p) => ({ ...p, moods: p.moods.includes(m) ? p.moods.filter((x) => x !== m) : [...p.moods, m] }));
@@ -296,20 +345,6 @@ export default function ScenePick() {
     const has = withoutSurprise.includes(value);
     return { ...p, [field]: has ? withoutSurprise.filter((x) => x !== value) : [...withoutSurprise, value] };
   });
-
-  const results = useMemo(() => {
-    if (!showResults) return [];
-    const eligible = CATALOG.filter((m) => passesHardFilters(m, prefs));
-    const scored = eligible.map((m) => ({ ...m, score: scoreMovie(m, prefs) }));
-    const withMatch = scored.filter((m) => m.score > 0);
-    const pool = withMatch.length > 0 ? withMatch : scored;
-    return pool.sort((a, b) => b.score - a.score || b.imdb - a.imdb).slice(0, 6);
-  }, [showResults, prefs]);
-
-  // Fetch live posters/ratings for whatever is currently on screen.
-  const resultsLive = useLiveData(results);
-  const searchLive = useLiveData(searchResults);
-  const watchlistLive = useLiveData(sortedWatchlist);
 
   const canAdvance = () => {
     const k = STEPS[step];
@@ -323,14 +358,45 @@ export default function ScenePick() {
     return true;
   };
 
-  const goNext = () => { if (step < STEPS.length - 1) setStep(step + 1); else setShowResults(true); };
+  const runSearch = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const kinds = prefs.type === "movie" ? ["movie"] : prefs.type === "series" ? ["tv"] : ["movie", "tv"];
+      const pools = await Promise.all(kinds.map((kind) => fetchDiscover({ tmdbKey: keys.tmdb, kind, prefs })));
+      let candidates = pools.flat().map((c) => ({ ...c, rank: rerankScore(c, prefs) }));
+      candidates.sort((a, b) => b.rank - a.rank);
+      const top = candidates.slice(0, 8);
+      const enriched = await Promise.all(top.map((c) => enrichWithRatings(c, keys.tmdb, keys.omdb)));
+      enriched.sort((a, b) => b.rank - a.rank);
+      setResults(enriched.slice(0, 6));
+      setShowResults(true);
+    } catch (e) {
+      setError(e.message || "Something went wrong while fetching picks. Check your API keys and try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openSimilar = async (item) => {
+    if (similarOpenFor === item.tmdbId) { setSimilarOpenFor(null); return; }
+    setSimilarOpenFor(item.tmdbId);
+    if (!similarItems[item.tmdbId]) {
+      const sim = await fetchSimilar({ tmdbKey: keys.tmdb, tmdbId: item.tmdbId, kind: item.type });
+      setSimilarItems((prev) => ({ ...prev, [item.tmdbId]: sim }));
+    }
+  };
+
+  const goNext = () => { if (step < STEPS.length - 1) setStep(step + 1); else runSearch(); };
   const goBack = () => { if (showResults) { setShowResults(false); return; } if (step > 0) setStep(step - 1); };
   const restart = () => {
     setPrefs({ type: "either", genres: [], moods: [], pace: [], era: [], runtime: [], ending: [] });
-    setStep(0); setShowResults(false);
+    setStep(0); setShowResults(false); setResults([]); setError(null);
   };
 
   const key = STEPS[step];
+
+  if (!keysLoaded) return <div style={{ minHeight: "100vh", background: "#FBF3EC" }} />;
 
   return (
     <div style={{ minHeight: "100vh", background: "#FBF3EC", color: "#2E2A33", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
@@ -367,23 +433,46 @@ export default function ScenePick() {
           display: flex; gap: 14px;
           box-shadow: 0 3px 14px rgba(46,42,51,0.06);
         }
-        .tab-btn { border: none; background: transparent; padding: 10px 16px; border-radius: 12px; font-size: 13px; font-weight: 800; cursor: pointer; color: #B5A896; }
+        .tab-btn { border: none; background: transparent; padding: 10px 14px; border-radius: 12px; font-size: 12px; font-weight: 800; cursor: pointer; color: #B5A896; }
         .tab-btn.active { background: #2E2A33; color: #FFFFFF; }
+        .field {
+          width: 100%; padding: 12px 14px; border-radius: 10px; border: 1.5px solid #EAD9C8;
+          font-size: 14px; margin-bottom: 14px; font-family: -apple-system, sans-serif;
+        }
       `}</style>
 
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "40px 20px 80px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
           <div style={{ fontSize: 13, letterSpacing: "0.08em", color: "#FF6B4A", fontWeight: 800, textTransform: "uppercase" }}>🎬 ScenePick</div>
-          <div style={{ display: "flex", gap: 4, background: "#F1E6DA", padding: 4, borderRadius: 14 }}>
-            <button className={`tab-btn ${view === "quiz" ? "active" : ""}`} onClick={() => setView("quiz")}>Discover</button>
-            <button className={`tab-btn ${view === "search" ? "active" : ""}`} onClick={() => setView("search")}>Search</button>
-            <button className={`tab-btn ${view === "watchlist" ? "active" : ""}`} onClick={() => setView("watchlist")}>
-              My List{watchlist.length > 0 ? ` (${watchlist.length})` : ""}
-            </button>
-          </div>
+          {!showKeyForm && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 2, background: "#F1E6DA", padding: 4, borderRadius: 14 }}>
+                <button className={`tab-btn ${view === "quiz" ? "active" : ""}`} onClick={() => setView("quiz")}>Discover</button>
+                <button className={`tab-btn ${view === "search" ? "active" : ""}`} onClick={() => setView("search")}>Search</button>
+                <button className={`tab-btn ${view === "watchlist" ? "active" : ""}`} onClick={() => setView("watchlist")}>
+                  My List{watchlist.length > 0 ? ` (${watchlist.length})` : ""}
+                </button>
+              </div>
+              <button onClick={() => { setKeyInputs(keys); setShowKeyForm(true); }} title="Update API keys" style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 16, color: "#B5A896" }}>⚙️</button>
+            </div>
+          )}
         </div>
 
-        {view === "quiz" && !showResults && (
+        {showKeyForm && (
+          <div>
+            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 8px" }}>Connect your API keys</h1>
+            <p style={{ fontSize: 13, color: "#8A8290", margin: "0 0 24px", lineHeight: 1.5 }}>
+              Stored only on this device — never sent anywhere except directly to TMDB and OMDb.
+            </p>
+            <label style={{ fontSize: 12, fontWeight: 700, color: "#6B6472" }}>TMDB API Key</label>
+            <input className="field" type="text" value={keyInputs.tmdb} onChange={(e) => setKeyInputs((k) => ({ ...k, tmdb: e.target.value }))} placeholder="Paste your TMDB API key (v3)" />
+            <label style={{ fontSize: 12, fontWeight: 700, color: "#6B6472" }}>OMDb API Key</label>
+            <input className="field" type="text" value={keyInputs.omdb} onChange={(e) => setKeyInputs((k) => ({ ...k, omdb: e.target.value }))} placeholder="Paste your OMDb API key" />
+            <button className="nav-btn primary" disabled={!keyInputs.tmdb.trim()} onClick={saveKeys}>Save & continue</button>
+          </div>
+        )}
+
+        {!showKeyForm && view === "quiz" && !showResults && !loading && (
           <>
             <div style={{ display: "flex", gap: 5, marginBottom: 28 }}>
               {STEPS.map((s, i) => <div key={s} style={{ height: 4, flex: 1, borderRadius: 3, background: i <= step ? "#FF6B4A" : "#EFE3D8" }} />)}
@@ -437,7 +526,7 @@ export default function ScenePick() {
 
             {key === "runtime" && (<>
               <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 8px", lineHeight: 1.15 }}>How much time do you have?</h1>
-              <p style={{ fontSize: 13, color: "#B5A896", margin: "0 0 20px", fontWeight: 600 }}>Pick one, mix a couple, or let us surprise you.</p>
+              <p style={{ fontSize: 13, color: "#B5A896", margin: "0 0 20px", fontWeight: 600 }}>Applies to movies — pick one, mix, or surprise us.</p>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {[{ id: "short", l: "Quick (~90 min)" }, { id: "standard", l: "Standard length" }, { id: "long", l: "Long, immersive" }, { id: "surprise", l: "🎲 Surprise me" }].map((o) => (
                   <Chip key={o.id} active={prefs.runtime.includes(o.id)} onClick={() => toggleSurprisable("runtime", o.id)}>{o.l}</Chip>
@@ -447,7 +536,7 @@ export default function ScenePick() {
 
             {key === "ending" && (<>
               <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 8px", lineHeight: 1.15 }}>How should it end?</h1>
-              <p style={{ fontSize: 13, color: "#B5A896", margin: "0 0 20px", fontWeight: 600 }}>Pick one, mix a couple, or let us surprise you.</p>
+              <p style={{ fontSize: 13, color: "#B5A896", margin: "0 0 20px", fontWeight: 600 }}>Helps us fine-tune future recommendations.</p>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {[{ id: "happy", l: "Happy ending, please" }, { id: "bittersweet", l: "Bittersweet is fine" }, { id: "open", l: "Open-ended" }, { id: "surprise", l: "🎲 Surprise me" }].map((o) => (
                   <Chip key={o.id} active={prefs.ending.includes(o.id)} onClick={() => toggleSurprisable("ending", o.id)}>{o.l}</Chip>
@@ -464,84 +553,81 @@ export default function ScenePick() {
           </>
         )}
 
-        {view === "search" && (
-          <div>
-            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 16px" }}>Search titles</h1>
-            <input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Type a movie or series title…"
-              style={{ width: "100%", padding: "13px 16px", borderRadius: 14, border: "1.5px solid #EAD9C8", fontSize: 14, marginBottom: 20, fontFamily: "-apple-system, sans-serif" }}
-            />
-            {searchQuery.trim() && searchResults.length === 0 && (
-              <p style={{ color: "#B5A896", fontWeight: 600 }}>No titles match "{searchQuery}".</p>
-            )}
-            {searchResults.map((m) => (
-              <MiniCard key={m.title} m={m} isAdded={isInWatchlist(m.title)} onAdd={() => addToWatchlist(m)} live={searchLive[m.title]} />
-            ))}
+        {!showKeyForm && loading && (
+          <div style={{ padding: "60px 0", textAlign: "center", color: "#B5A896", fontWeight: 700 }}>Finding your picks…</div>
+        )}
+
+        {!showKeyForm && error && (
+          <div style={{ padding: "20px 0" }}>
+            <p style={{ color: "#D9534F", fontWeight: 600, marginBottom: 16 }}>{error}</p>
+            <button className="nav-btn ghost" onClick={goBack}>Go back</button>
           </div>
         )}
 
-        {view === "quiz" && showResults && (
+        {!showKeyForm && !loading && !error && view === "quiz" && showResults && (
           <div>
             <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 20px" }}>Your picks 🍿</h1>
-            {results.map((m) => {
-              const live = resultsLive[m.title];
-              const imdb = live?.imdb ?? m.imdb;
-              const rt = live?.rt ?? m.rt;
-              const posterUrl = live?.poster ?? null;
-              return (
-                <div key={m.title} className="ticket">
-                  <Poster hue={m.posterHue} title={m.title} imageUrl={posterUrl} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                      <span style={{ fontSize: 16, fontWeight: 800 }}>{m.title}</span>
-                      <button
-                        className={`small-btn ${isInWatchlist(m.title) ? "added" : ""}`}
-                        onClick={() => isInWatchlist(m.title) ? removeFromWatchlist(m.title) : addToWatchlist(m)}
-                      >
-                        {isInWatchlist(m.title) ? "✓ Added" : "+ My List"}
-                      </button>
-                    </div>
-                    <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
-                      {m.type} · {m.year} · {m.genres.join(", ")}
-                    </div>
-                    <RatingBadges imdb={imdb} rt={rt} />
-                    <div style={{ fontSize: 13, lineHeight: 1.5, color: "#6B6472", marginTop: 8 }}>{m.blurb}</div>
-                    <button
-                      onClick={() => setSimilarOpenFor(similarOpenFor === m.title ? null : m.title)}
-                      style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, marginTop: 10, cursor: "pointer" }}
-                    >
-                      {similarOpenFor === m.title ? "Hide similar ▲" : "Similar titles ▼"}
+            {results.map((m) => (
+              <div key={m.tmdbId} className="ticket">
+                <Poster posterPath={m.posterPath} title={m.title} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <span style={{ fontSize: 16, fontWeight: 800 }}>{m.title}</span>
+                    <button className={`small-btn ${isInWatchlist(m.tmdbId) ? "added" : ""}`} onClick={() => isInWatchlist(m.tmdbId) ? removeFromWatchlist(m.tmdbId) : addToWatchlist(m)}>
+                      {isInWatchlist(m.tmdbId) ? "✓ Added" : "+ My List"}
                     </button>
-                    {similarOpenFor === m.title && (
-                      <div style={{ marginTop: 10 }}>
-                        {getSimilar(m).map((s) => (
-                          <MiniCard key={s.title} m={s} isAdded={isInWatchlist(s.title)} onAdd={() => addToWatchlist(s)} live={resultsLive[s.title]} />
-                        ))}
-                      </div>
-                    )}
                   </div>
+                  <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
+                    {m.type} · {m.year} · {m.genres.join(", ") || "—"}
+                  </div>
+                  <RatingBadges imdb={m.imdb} rt={m.rt} />
+                  <div style={{ fontSize: 13, lineHeight: 1.5, color: "#6B6472", marginTop: 8 }}>{m.overview}</div>
+                  <button onClick={() => openSimilar(m)} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, marginTop: 10, cursor: "pointer" }}>
+                    {similarOpenFor === m.tmdbId ? "Hide similar ▲" : "Similar titles ▼"}
+                  </button>
+                  {similarOpenFor === m.tmdbId && (
+                    <div style={{ marginTop: 10 }}>
+                      {!similarItems[m.tmdbId] && <p style={{ fontSize: 12, color: "#B5A896" }}>Loading…</p>}
+                      {(similarItems[m.tmdbId] || []).map((s) => (
+                        <MiniCard key={s.tmdbId} m={s} isAdded={isInWatchlist(s.tmdbId)} onAdd={() => addToWatchlist(s)} />
+                      ))}
+                    </div>
+                  )}
                 </div>
-              );
-            })}
-            <div style={{ display: "flex", gap: 10 }}>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
               <button className="nav-btn ghost" onClick={goBack}>Adjust answers</button>
               <button className="nav-btn primary" onClick={restart}>Start over</button>
             </div>
           </div>
         )}
 
-        {view === "watchlist" && (
+        {!showKeyForm && view === "search" && (
+          <div>
+            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 16px" }}>Search titles</h1>
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Type a movie or series title…"
+              className="field"
+            />
+            {searching && <p style={{ color: "#B5A896", fontWeight: 600 }}>Searching…</p>}
+            {!searching && searchQuery.trim() && searchResults.length === 0 && (
+              <p style={{ color: "#B5A896", fontWeight: 600 }}>No titles match "{searchQuery}".</p>
+            )}
+            {searchResults.map((m) => (
+              <MiniCard key={m.tmdbId} m={m} isAdded={isInWatchlist(m.tmdbId)} onAdd={() => addToWatchlist(m)} />
+            ))}
+          </div>
+        )}
+
+        {!showKeyForm && view === "watchlist" && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <h1 style={{ fontSize: 26, fontWeight: 800, margin: 0 }}>My List</h1>
               {watchlist.length > 1 && (
-                <select
-                  value={watchlistSort}
-                  onChange={(e) => setWatchlistSort(e.target.value)}
-                  style={{ border: "1.5px solid #EAD9C8", borderRadius: 10, padding: "6px 10px", fontSize: 12, fontWeight: 700, color: "#6B6472", background: "#FFFFFF" }}
-                >
+                <select value={watchlistSort} onChange={(e) => setWatchlistSort(e.target.value)} style={{ border: "1.5px solid #EAD9C8", borderRadius: 10, padding: "6px 10px", fontSize: 12, fontWeight: 700, color: "#6B6472", background: "#FFFFFF" }}>
                   <option value="added">Recently added</option>
                   <option value="rating">My rating</option>
                   <option value="year">Year</option>
@@ -549,37 +635,31 @@ export default function ScenePick() {
                 </select>
               )}
             </div>
-            {!loaded && <p style={{ color: "#B5A896", fontWeight: 600 }}>Loading…</p>}
-            {loaded && watchlist.length === 0 && (
+            {!watchlistLoaded && <p style={{ color: "#B5A896", fontWeight: 600 }}>Loading…</p>}
+            {watchlistLoaded && watchlist.length === 0 && (
               <p style={{ color: "#B5A896", fontWeight: 600, lineHeight: 1.6 }}>
-                Nothing here yet. Go to "Discover", get some picks, and tap "+ My List" to save them here.
+                Nothing here yet. Go to "Discover" or "Search" and tap "+ My List" to save titles here.
               </p>
             )}
-            {sortedWatchlist.map((m) => {
-              const live = watchlistLive[m.title];
-              const imdb = live?.imdb ?? m.imdb;
-              const rt = live?.rt ?? m.rt;
-              const posterUrl = live?.poster ?? null;
-              return (
-                <div key={m.title} className="ticket" style={{ opacity: m.watched ? 0.6 : 1 }}>
-                  <Poster hue={m.posterHue} title={m.title} imageUrl={posterUrl} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                      <span style={{ fontSize: 16, fontWeight: 800 }}>{m.title}{m.watched ? " ✓" : ""}</span>
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <button className="small-btn" onClick={() => toggleWatched(m.title)}>{m.watched ? "Unwatch" : "Watched"}</button>
-                        <button className="small-btn remove" onClick={() => removeFromWatchlist(m.title)}>Remove</button>
-                      </div>
+            {sortedWatchlist.map((m) => (
+              <div key={m.tmdbId} className="ticket" style={{ opacity: m.watched ? 0.6 : 1 }}>
+                <Poster posterPath={m.posterPath} title={m.title} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <span style={{ fontSize: 16, fontWeight: 800 }}>{m.title}{m.watched ? " ✓" : ""}</span>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className="small-btn" onClick={() => toggleWatched(m.tmdbId)}>{m.watched ? "Unwatch" : "Watched"}</button>
+                      <button className="small-btn remove" onClick={() => removeFromWatchlist(m.tmdbId)}>Remove</button>
                     </div>
-                    <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
-                      {m.type} · {m.year} · {m.genres.join(", ")}
-                    </div>
-                    <RatingBadges imdb={imdb} rt={rt} />
-                    <OverallRating value={m.myRating || 0} onChange={(v) => setMyRating(m.title, v)} />
                   </div>
+                  <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
+                    {m.type} · {m.year} · {(m.genres || []).join(", ") || "—"}
+                  </div>
+                  <RatingBadges imdb={m.imdb} rt={m.rt} />
+                  <OverallRating value={m.myRating || 0} onChange={(v) => setMyRating(m.tmdbId, v)} />
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
         )}
       </div>
