@@ -40,7 +40,6 @@ const WATCHLIST_KEY = "scenepick_watchlist_v3";
 const POSTER_BASE = "https://image.tmdb.org/t/p/w342";
 
 const TMDB_KEY = (import.meta.env.VITE_TMDB_API_KEY || "").trim();
-const OMDB_KEY = (import.meta.env.VITE_OMDB_API_KEY || "").trim();
 
 function eraDateRange(era) {
   if (era === "classic") return { lte: "1999-12-31" };
@@ -208,30 +207,7 @@ function rerankScore(item, prefs) {
   return bonus + item.tmdbVote;
 }
 
-async function enrichWithRatings(item, tmdbKey, omdbKey) {
-  try {
-    const detailRes = await fetch(
-      `https://api.themoviedb.org/3/${item.type === "Movie" ? "movie" : "tv"}/${item.tmdbId}?api_key=${tmdbKey}&append_to_response=external_ids`
-    );
-    const detail = await detailRes.json();
-    const imdbId = detail.external_ids?.imdb_id;
-    let imdb = null, rt = null;
-    if (imdbId && omdbKey) {
-      const omdbRes = await fetch(`https://www.omdbapi.com/?apikey=${omdbKey}&i=${imdbId}`);
-      const omdb = await omdbRes.json();
-      if (omdb.imdbRating && omdb.imdbRating !== "N/A") imdb = parseFloat(omdb.imdbRating);
-      const rtEntry = (omdb.Ratings || []).find((r) => r.Source === "Rotten Tomatoes");
-      if (rtEntry) rt = parseInt(rtEntry.Value, 10);
-    }
-    if (imdb == null && item.tmdbVote > 0) {
-      // OMDb has no data for this title — fall back to TMDB's own community rating
-      return { ...item, imdb: Math.round(item.tmdbVote * 10) / 10, imdbFallback: true, rt };
-    }
-    return { ...item, imdb, rt };
-  } catch (e) {
-    return { ...item, imdb: null, rt: null };
-  }
-}
+
 
 function Poster({ posterPath, title }) {
   if (posterPath) {
@@ -260,18 +236,12 @@ function Poster({ posterPath, title }) {
   );
 }
 
-function RatingBadges({ imdb, rt, imdbFallback }) {
+function RatingBadges({ rating }) {
   return (
     <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 4, fontFamily: "-apple-system, sans-serif", fontSize: 11 }}>
-        <span style={{ background: imdbFallback ? "#01B4E4" : "#F5C518", color: imdbFallback ? "#FFFFFF" : "#2E2A33", fontWeight: 800, padding: "1px 5px", borderRadius: 4, fontSize: 10 }}>
-          {imdbFallback ? "TMDB" : "IMDb"}
-        </span>
-        <span style={{ color: "#6B6472", fontWeight: 600 }}>{imdb != null ? imdb : "—"}</span>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 4, fontFamily: "-apple-system, sans-serif", fontSize: 11 }}>
-        <span>{rt != null ? (rt >= 60 ? "🍅" : "🟢") : "—"}</span>
-        <span style={{ color: "#6B6472", fontWeight: 600 }}>{rt != null ? `${rt}%` : "—"}</span>
+        <span style={{ background: "#01B4E4", color: "#FFFFFF", fontWeight: 800, padding: "1px 5px", borderRadius: 4, fontSize: 10 }}>TMDB</span>
+        <span style={{ color: "#6B6472", fontWeight: 600 }}>{rating != null ? rating : "—"}</span>
       </div>
     </div>
   );
@@ -303,7 +273,9 @@ function MiniCard({ m, isAdded, onAdd }) {
       <Poster posterPath={m.posterPath} title={m.title} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 14, fontWeight: 800 }}>{m.title}</div>
-        <div style={{ fontSize: 11, color: "#B5A896", fontWeight: 600, marginTop: 2 }}>{m.type} · {m.year}</div>
+        <div style={{ fontSize: 11, color: "#B5A896", fontWeight: 600, marginTop: 2 }}>
+          {m.type} · {m.year}{m.tmdbVote ? ` · ★ ${Math.round(m.tmdbVote * 10) / 10}` : ""}
+        </div>
       </div>
       <button className={`small-btn ${isAdded ? "added" : ""}`} onClick={onAdd}>{isAdded ? "✓" : "+ Add"}</button>
     </div>
@@ -489,10 +461,7 @@ export default function App() {
       });
       let candidates = deduped.map((c) => ({ ...c, rank: rerankScore(c, prefs) }));
       candidates.sort((a, b) => b.rank - a.rank);
-      const top = candidates.slice(0, 12);
-      const enriched = await Promise.all(top.map((c) => enrichWithRatings(c, TMDB_KEY, OMDB_KEY)));
-      enriched.sort((a, b) => b.rank - a.rank);
-      setResults(enriched.slice(0, 12));
+      setResults(candidates.slice(0, 15));
       setShowResults(true);
     } catch (e) {
       setError(e.message || "Something went wrong while fetching picks. Check your API keys and try again.");
@@ -685,7 +654,7 @@ export default function App() {
                   <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
                     {m.type} · {m.year} · {m.genres.join(", ") || "—"}
                   </div>
-                  <RatingBadges imdb={m.imdb} rt={m.rt} imdbFallback={m.imdbFallback} />
+                  <RatingBadges rating={m.tmdbVote ? Math.round(m.tmdbVote * 10) / 10 : null} />
                   <div style={{ fontSize: 13, lineHeight: 1.5, color: "#6B6472", marginTop: 8 }}>{m.overview}</div>
                   <button onClick={() => openSimilar(m)} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, marginTop: 10, cursor: "pointer" }}>
                     {similarOpenFor === m.tmdbId ? "Hide similar ▲" : "Similar titles ▼"}
@@ -801,7 +770,7 @@ export default function App() {
                   <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
                     {m.type} · {m.year} · {(m.genres || []).join(", ") || "—"}
                   </div>
-                  <RatingBadges imdb={m.imdb} rt={m.rt} imdbFallback={m.imdbFallback} />
+                  <RatingBadges rating={m.tmdbVote ? Math.round(m.tmdbVote * 10) / 10 : null} />
                   <OverallRating value={m.myRating || 0} onChange={(v) => setMyRating(m.tmdbId, v)} />
                 </div>
               </div>
