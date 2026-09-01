@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "110279808779",
+    "project_id": "scenepick-dab28",
+    "storage_bucket": "scenepick-dab28.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:110279808779:android:1cac17a9925cdaff78b40e",
+        "android_client_info": {
+          "package_name": "com.scenepick.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAbsvE8BXaDnqUSa6KkycYJ0ZxXEDNkJGc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

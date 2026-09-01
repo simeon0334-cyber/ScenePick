@@ -1,4 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
+import { db, getUid } from "./firebase";
+import { collection, query, where, orderBy, limit, getDocs, addDoc, serverTimestamp } from "firebase/firestore";
 
 const GENRES = [
   "Action", "Comedy", "Drama", "Thriller", "Horror",
@@ -264,6 +266,121 @@ function Chip({ active, onClick, children, variant }) {
     <button onClick={onClick} className={`chip ${variant === "mood" ? "mood-chip" : ""} ${active ? "active" : ""}`}>
       {children}
     </button>
+  );
+}
+
+function CommentItem({ c }) {
+  const [revealed, setRevealed] = useState(false);
+  return (
+    <div style={{ padding: "10px 0", borderBottom: "1px solid #F1E6DA" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+        <span style={{ fontSize: 12, fontWeight: 800, color: "#2E2A33" }}>{c.nickname || "Anonymous"}</span>
+        {c.spoiler && !revealed && (
+          <button
+            onClick={() => setRevealed(true)}
+            style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+          >
+            ⚠️ Show spoiler
+          </button>
+        )}
+      </div>
+      <div style={{ fontSize: 13, color: "#6B6472", lineHeight: 1.5, filter: c.spoiler && !revealed ? "blur(5px)" : "none", userSelect: c.spoiler && !revealed ? "none" : "auto" }}>
+        {c.text}
+      </div>
+    </div>
+  );
+}
+
+function CommentsSection({ tmdbId, type }) {
+  const [open, setOpen] = useState(false);
+  const [comments, setComments] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [text, setText] = useState("");
+  const [spoiler, setSpoiler] = useState(false);
+  const [nickname, setNickname] = useState(() => localStorage.getItem("scenepick_nickname") || "");
+  const [posting, setPosting] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const q = query(
+        collection(db, "comments"),
+        where("tmdbId", "==", tmdbId),
+        where("type", "==", type),
+        orderBy("createdAt", "desc"),
+        limit(50)
+      );
+      const snap = await getDocs(q);
+      setComments(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    } catch (e) {
+      console.error("Failed to load comments", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleOpen = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && comments.length === 0) load();
+  };
+
+  const post = async () => {
+    if (!text.trim()) return;
+    const finalNickname = nickname.trim() || "Anonymous";
+    localStorage.setItem("scenepick_nickname", finalNickname);
+    setPosting(true);
+    try {
+      const uid = getUid();
+      const newComment = { tmdbId, type, text: text.trim(), spoiler, nickname: finalNickname, uid, createdAt: serverTimestamp() };
+      await addDoc(collection(db, "comments"), newComment);
+      setComments((prev) => [{ ...newComment, id: `local-${Date.now()}` }, ...prev]);
+      setText("");
+      setSpoiler(false);
+    } catch (e) {
+      console.error("Failed to post comment", e);
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button onClick={toggleOpen} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, cursor: "pointer" }}>
+        {open ? "Hide comments ▲" : "💬 Comments ▼"}
+      </button>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+            <input
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              placeholder="Your name"
+              className="field"
+              style={{ marginBottom: 0 }}
+            />
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Share your thoughts…"
+              rows={2}
+              className="field"
+              style={{ marginBottom: 0, resize: "vertical", fontFamily: "-apple-system, sans-serif" }}
+            />
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#6B6472", fontWeight: 600 }}>
+              <input type="checkbox" checked={spoiler} onChange={(e) => setSpoiler(e.target.checked)} />
+              Contains spoilers
+            </label>
+            <button className="small-btn" disabled={posting || !text.trim()} onClick={post} style={{ alignSelf: "flex-start" }}>
+              {posting ? "Posting…" : "Post comment"}
+            </button>
+          </div>
+          {loading && <p style={{ fontSize: 12, color: "#B5A896" }}>Loading comments…</p>}
+          {!loading && comments.length === 0 && <p style={{ fontSize: 12, color: "#B5A896" }}>No comments yet — be the first.</p>}
+          {comments.map((c) => <CommentItem key={c.id} c={c} />)}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -667,6 +784,7 @@ export default function App() {
                       ))}
                     </div>
                   )}
+                  <CommentsSection tmdbId={m.tmdbId} type={m.type} />
                 </div>
               </div>
             ))}
@@ -772,6 +890,7 @@ export default function App() {
                   </div>
                   <RatingBadges rating={m.tmdbVote ? Math.round(m.tmdbVote * 10) / 10 : null} />
                   <OverallRating value={m.myRating || 0} onChange={(v) => setMyRating(m.tmdbId, v)} />
+                  <CommentsSection tmdbId={m.tmdbId} type={m.type} />
                 </div>
               </div>
             ))}
