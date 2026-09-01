@@ -529,15 +529,11 @@ export default function App() {
       `}</style>
 
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "40px 20px 80px" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 16, letterSpacing: "0.01em", color: "#2E2A33", fontWeight: 800 }}>
-            <LogoMark size={24} />
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 28, gap: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 19, letterSpacing: "0.01em", color: "#2E2A33", fontWeight: 800 }}>
+            <LogoMark size={30} />
             ScenePick
           </div>
-        </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 28 }}>
           <div style={{ display: "flex", gap: 2, background: "#F1E6DA", padding: 4, borderRadius: 14 }}>
             <button className={`tab-btn ${view === "quiz" ? "active" : ""}`} onClick={() => setView("quiz")}>Discover</button>
             <button className={`tab-btn ${view === "search" ? "active" : ""}`} onClick={() => setView("search")}>Search</button>
