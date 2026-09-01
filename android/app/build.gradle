@@ -20,6 +20,18 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+        }
+    }
+    signingConfigs {
+        release {
+            def keystorePath = System.getenv("SCENEPICK_KEYSTORE_PATH")
+            if (keystorePath != null) {
+                storeFile file(keystorePath)
+                storePassword System.getenv("SCENEPICK_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("SCENEPICK_KEY_ALIAS")
+                keyPassword System.getenv("SCENEPICK_KEY_PASSWORD")
+            }
         }
     }
 }
