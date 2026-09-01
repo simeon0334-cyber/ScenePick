@@ -36,9 +36,11 @@ const PACE_GENRE_BOOST = {
 };
 
 const STEPS = ["type", "genres", "moods", "pace", "era", "runtime", "ending"];
-const KEYS_STORAGE = "scenepick_api_keys_v1";
 const WATCHLIST_KEY = "scenepick_watchlist_v3";
 const POSTER_BASE = "https://image.tmdb.org/t/p/w342";
+
+const TMDB_KEY = import.meta.env.VITE_TMDB_API_KEY || "";
+const OMDB_KEY = import.meta.env.VITE_OMDB_API_KEY || "";
 
 function eraDateRange(era) {
   if (era === "classic") return { lte: "1999-12-31" };
@@ -118,7 +120,17 @@ async function searchTitles({ tmdbKey, query }) {
   const data = await res.json();
   return (data.results || [])
     .filter((r) => r.media_type === "movie" || r.media_type === "tv")
-    .slice(0, 10)
+    .slice(0, 20)
+    .map((r) => mapResult(r, r.media_type));
+}
+
+async function fetchTrending({ tmdbKey }) {
+  const res = await fetch(`https://api.themoviedb.org/3/trending/all/week?api_key=${tmdbKey}&language=en-US`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data.results || [])
+    .filter((r) => r.media_type === "movie" || r.media_type === "tv")
+    .slice(0, 20)
     .map((r) => mapResult(r, r.media_type));
 }
 
@@ -197,6 +209,18 @@ function RatingBadges({ imdb, rt }) {
   );
 }
 
+function LogoMark({ size = 26 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 100 100" fill="none">
+      <rect width="100" height="100" rx="22" fill="#FF6B4A" />
+      <path d="M28 42 L37 82 L44 82 L46 48 L54 48 L56 82 L63 82 L72 42 Z" fill="#FFFFFF" />
+      <path d="M28 43 a9 9 0 0 1 11 -13 a10 10 0 0 1 22 0 a9 9 0 0 1 11 13 Z" fill="#FFFFFF" />
+      <circle cx="50" cy="60" r="17" fill="#FF6B4A" stroke="#FFFFFF" strokeWidth="2.4" />
+      <polygon points="45,52 45,68 59,60" fill="#FFFFFF" />
+    </svg>
+  );
+}
+
 function Chip({ active, onClick, children, variant }) {
   return (
     <button onClick={onClick} className={`chip ${variant === "mood" ? "mood-chip" : ""} ${active ? "active" : ""}`}>
@@ -245,11 +269,6 @@ function OverallRating({ value, onChange }) {
 }
 
 export default function App() {
-  const [keys, setKeys] = useState({ tmdb: "", omdb: "" });
-  const [keyInputs, setKeyInputs] = useState({ tmdb: "", omdb: "" });
-  const [showKeyForm, setShowKeyForm] = useState(false);
-  const [keysLoaded, setKeysLoaded] = useState(false);
-
   const [view, setView] = useState("quiz");
   const [step, setStep] = useState(0);
   const [showResults, setShowResults] = useState(false);
@@ -264,6 +283,8 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
+  const [trending, setTrending] = useState([]);
+  const [trendingLoaded, setTrendingLoaded] = useState(false);
 
   const [similarOpenFor, setSimilarOpenFor] = useState(null);
   const [similarItems, setSimilarItems] = useState({});
@@ -274,15 +295,6 @@ export default function App() {
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(KEYS_STORAGE);
-      if (raw) setKeys(JSON.parse(raw));
-      else setShowKeyForm(true);
-    } catch (e) {
-      setShowKeyForm(true);
-    } finally {
-      setKeysLoaded(true);
-    }
-    try {
       const raw = localStorage.getItem(WATCHLIST_KEY);
       if (raw) setWatchlist(JSON.parse(raw));
     } catch (e) {
@@ -291,13 +303,6 @@ export default function App() {
       setWatchlistLoaded(true);
     }
   }, []);
-
-  const saveKeys = () => {
-    const next = { tmdb: keyInputs.tmdb.trim(), omdb: keyInputs.omdb.trim() };
-    setKeys(next);
-    setShowKeyForm(false);
-    localStorage.setItem(KEYS_STORAGE, JSON.stringify(next));
-  };
 
   const saveWatchlist = (next) => {
     setWatchlist(next);
@@ -321,11 +326,20 @@ export default function App() {
   }, [watchlist, watchlistSort]);
 
   useEffect(() => {
-    if (!searchQuery.trim() || !keys.tmdb) { setSearchResults([]); return; }
+    if (!TMDB_KEY || trendingLoaded) return;
+    (async () => {
+      const t = await fetchTrending({ tmdbKey: TMDB_KEY });
+      setTrending(t);
+      setTrendingLoaded(true);
+    })();
+  }, [TMDB_KEY, trendingLoaded]);
+
+  useEffect(() => {
+    if (!searchQuery.trim() || !TMDB_KEY) { setSearchResults([]); return; }
     const handle = setTimeout(async () => {
       setSearching(true);
       try {
-        const r = await searchTitles({ tmdbKey: keys.tmdb, query: searchQuery.trim() });
+        const r = await searchTitles({ tmdbKey: TMDB_KEY, query: searchQuery.trim() });
         setSearchResults(r);
       } catch (e) {
         setSearchResults([]);
@@ -334,7 +348,7 @@ export default function App() {
       }
     }, 450);
     return () => clearTimeout(handle);
-  }, [searchQuery, keys.tmdb]);
+  }, [searchQuery, TMDB_KEY]);
 
   const toggleGenre = (g) => setPrefs((p) => ({ ...p, genres: p.genres.includes(g) ? p.genres.filter((x) => x !== g) : [...p.genres, g] }));
   const toggleMood = (m) => setPrefs((p) => ({ ...p, moods: p.moods.includes(m) ? p.moods.filter((x) => x !== m) : [...p.moods, m] }));
@@ -363,11 +377,11 @@ export default function App() {
     setError(null);
     try {
       const kinds = prefs.type === "movie" ? ["movie"] : prefs.type === "series" ? ["tv"] : ["movie", "tv"];
-      const pools = await Promise.all(kinds.map((kind) => fetchDiscover({ tmdbKey: keys.tmdb, kind, prefs })));
+      const pools = await Promise.all(kinds.map((kind) => fetchDiscover({ tmdbKey: TMDB_KEY, kind, prefs })));
       let candidates = pools.flat().map((c) => ({ ...c, rank: rerankScore(c, prefs) }));
       candidates.sort((a, b) => b.rank - a.rank);
       const top = candidates.slice(0, 8);
-      const enriched = await Promise.all(top.map((c) => enrichWithRatings(c, keys.tmdb, keys.omdb)));
+      const enriched = await Promise.all(top.map((c) => enrichWithRatings(c, TMDB_KEY, OMDB_KEY)));
       enriched.sort((a, b) => b.rank - a.rank);
       setResults(enriched.slice(0, 6));
       setShowResults(true);
@@ -382,7 +396,7 @@ export default function App() {
     if (similarOpenFor === item.tmdbId) { setSimilarOpenFor(null); return; }
     setSimilarOpenFor(item.tmdbId);
     if (!similarItems[item.tmdbId]) {
-      const sim = await fetchSimilar({ tmdbKey: keys.tmdb, tmdbId: item.tmdbId, kind: item.type });
+      const sim = await fetchSimilar({ tmdbKey: TMDB_KEY, tmdbId: item.tmdbId, kind: item.type });
       setSimilarItems((prev) => ({ ...prev, [item.tmdbId]: sim }));
     }
   };
@@ -395,8 +409,6 @@ export default function App() {
   };
 
   const key = STEPS[step];
-
-  if (!keysLoaded) return <div style={{ minHeight: "100vh", background: "#FBF3EC" }} />;
 
   return (
     <div style={{ minHeight: "100vh", background: "#FBF3EC", color: "#2E2A33", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
@@ -443,36 +455,20 @@ export default function App() {
 
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "40px 20px 80px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
-          <div style={{ fontSize: 13, letterSpacing: "0.08em", color: "#FF6B4A", fontWeight: 800, textTransform: "uppercase" }}>🎬 ScenePick</div>
-          {!showKeyForm && (
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <div style={{ display: "flex", gap: 2, background: "#F1E6DA", padding: 4, borderRadius: 14 }}>
-                <button className={`tab-btn ${view === "quiz" ? "active" : ""}`} onClick={() => setView("quiz")}>Discover</button>
-                <button className={`tab-btn ${view === "search" ? "active" : ""}`} onClick={() => setView("search")}>Search</button>
-                <button className={`tab-btn ${view === "watchlist" ? "active" : ""}`} onClick={() => setView("watchlist")}>
-                  My List{watchlist.length > 0 ? ` (${watchlist.length})` : ""}
-                </button>
-              </div>
-              <button onClick={() => { setKeyInputs(keys); setShowKeyForm(true); }} title="Update API keys" style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 16, color: "#B5A896" }}>⚙️</button>
-            </div>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 15, letterSpacing: "0.02em", color: "#2E2A33", fontWeight: 800 }}>
+            <LogoMark />
+            ScenePick
+          </div>
+          <div style={{ display: "flex", gap: 2, background: "#F1E6DA", padding: 4, borderRadius: 14 }}>
+            <button className={`tab-btn ${view === "quiz" ? "active" : ""}`} onClick={() => setView("quiz")}>Discover</button>
+            <button className={`tab-btn ${view === "search" ? "active" : ""}`} onClick={() => setView("search")}>Search</button>
+            <button className={`tab-btn ${view === "watchlist" ? "active" : ""}`} onClick={() => setView("watchlist")}>
+              My List{watchlist.length > 0 ? ` (${watchlist.length})` : ""}
+            </button>
+          </div>
         </div>
 
-        {showKeyForm && (
-          <div>
-            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 8px" }}>Connect your API keys</h1>
-            <p style={{ fontSize: 13, color: "#8A8290", margin: "0 0 24px", lineHeight: 1.5 }}>
-              Stored only on this device — never sent anywhere except directly to TMDB and OMDb.
-            </p>
-            <label style={{ fontSize: 12, fontWeight: 700, color: "#6B6472" }}>TMDB API Key</label>
-            <input className="field" type="text" value={keyInputs.tmdb} onChange={(e) => setKeyInputs((k) => ({ ...k, tmdb: e.target.value }))} placeholder="Paste your TMDB API key (v3)" />
-            <label style={{ fontSize: 12, fontWeight: 700, color: "#6B6472" }}>OMDb API Key</label>
-            <input className="field" type="text" value={keyInputs.omdb} onChange={(e) => setKeyInputs((k) => ({ ...k, omdb: e.target.value }))} placeholder="Paste your OMDb API key" />
-            <button className="nav-btn primary" disabled={!keyInputs.tmdb.trim()} onClick={saveKeys}>Save & continue</button>
-          </div>
-        )}
-
-        {!showKeyForm && view === "quiz" && !showResults && !loading && (
+        {view === "quiz" && !showResults && !loading && (
           <>
             <div style={{ display: "flex", gap: 5, marginBottom: 28 }}>
               {STEPS.map((s, i) => <div key={s} style={{ height: 4, flex: 1, borderRadius: 3, background: i <= step ? "#FF6B4A" : "#EFE3D8" }} />)}
@@ -553,18 +549,18 @@ export default function App() {
           </>
         )}
 
-        {!showKeyForm && loading && (
+        {loading && (
           <div style={{ padding: "60px 0", textAlign: "center", color: "#B5A896", fontWeight: 700 }}>Finding your picks…</div>
         )}
 
-        {!showKeyForm && error && (
+        {error && (
           <div style={{ padding: "20px 0" }}>
             <p style={{ color: "#D9534F", fontWeight: 600, marginBottom: 16 }}>{error}</p>
             <button className="nav-btn ghost" onClick={goBack}>Go back</button>
           </div>
         )}
 
-        {!showKeyForm && !loading && !error && view === "quiz" && showResults && (
+        {!loading && !error && view === "quiz" && showResults && (
           <div>
             <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 20px" }}>Your picks 🍿</h1>
             {results.map((m) => (
@@ -603,7 +599,7 @@ export default function App() {
           </div>
         )}
 
-        {!showKeyForm && view === "search" && (
+        {view === "search" && (
           <div>
             <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 16px" }}>Search titles</h1>
             <input
@@ -616,13 +612,24 @@ export default function App() {
             {!searching && searchQuery.trim() && searchResults.length === 0 && (
               <p style={{ color: "#B5A896", fontWeight: 600 }}>No titles match "{searchQuery}".</p>
             )}
-            {searchResults.map((m) => (
+            {searchQuery.trim() && searchResults.map((m) => (
               <MiniCard key={m.tmdbId} m={m} isAdded={isInWatchlist(m.tmdbId)} onAdd={() => addToWatchlist(m)} />
             ))}
+            {!searchQuery.trim() && (
+              <>
+                <div style={{ fontSize: 12, color: "#B5A896", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
+                  🔥 Trending this week
+                </div>
+                {!trendingLoaded && <p style={{ color: "#B5A896", fontWeight: 600 }}>Loading…</p>}
+                {trending.map((m) => (
+                  <MiniCard key={m.tmdbId} m={m} isAdded={isInWatchlist(m.tmdbId)} onAdd={() => addToWatchlist(m)} />
+                ))}
+              </>
+            )}
           </div>
         )}
 
-        {!showKeyForm && view === "watchlist" && (
+        {view === "watchlist" && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <h1 style={{ fontSize: 26, fontWeight: 800, margin: 0 }}>My List</h1>
