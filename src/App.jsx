@@ -425,6 +425,37 @@ function OverallRating({ value, onChange }) {
   );
 }
 
+function AboutSection() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginTop: 40, paddingTop: 20, borderTop: "1px solid #EFE3D8", textAlign: "center" }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{ border: "none", background: "transparent", color: "#B5A896", fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+      >
+        ℹ️ About & Credits
+      </button>
+      {open && (
+        <div style={{ marginTop: 16, fontSize: 12, color: "#8A8290", lineHeight: 1.7 }}>
+          <img
+            src="/tmdb-logo.svg"
+            alt="The Movie Database"
+            style={{ height: 20, marginBottom: 10, opacity: 0.85 }}
+          />
+          <p style={{ maxWidth: 340, margin: "0 auto 10px" }}>
+            This product uses the TMDB API but is not endorsed or certified by TMDB.
+          </p>
+          <p>
+            <a href="https://simeon0334-cyber.github.io/ScenePick/privacy.html" target="_blank" rel="noopener noreferrer" style={{ color: "#FF6B4A" }}>Privacy Policy</a>
+            {" · "}
+            <a href="https://simeon0334-cyber.github.io/ScenePick/terms.html" target="_blank" rel="noopener noreferrer" style={{ color: "#FF6B4A" }}>Terms of Use</a>
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState("quiz");
   const [step, setStep] = useState(0);
@@ -896,6 +927,8 @@ export default function App() {
             ))}
           </div>
         )}
+
+        <AboutSection />
       </div>
     </div>
   );
