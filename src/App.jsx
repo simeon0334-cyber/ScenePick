@@ -131,6 +131,12 @@ async function resolveKeywordIds(tmdbKey, terms) {
   return results.filter((id) => id != null);
 }
 
+const TV_GENRE_FALLBACK_KEYWORDS = {
+  Horror: ["horror"],
+  Thriller: ["thriller"],
+  Romance: ["romance"],
+};
+
 const MOOD_KEYWORD_TERMS = {
   light: ["feel good"],
   intense: ["suspense"],
@@ -151,6 +157,13 @@ async function resolveAllKeywordIds(tmdbKey, prefs) {
   prefs.moods.forEach((m) => { if (MOOD_KEYWORD_TERMS[m]) terms.push(...MOOD_KEYWORD_TERMS[m]); });
   prefs.pace.forEach((p) => { if (p !== "surprise" && PACE_KEYWORD_TERMS[p]) terms.push(...PACE_KEYWORD_TERMS[p]); });
   prefs.ending.forEach((e) => { if (e !== "surprise" && ENDING_KEYWORD_TERMS[e]) terms.push(...ENDING_KEYWORD_TERMS[e]); });
+  if (terms.length === 0) return [];
+  return resolveKeywordIds(tmdbKey, terms);
+}
+
+async function resolveTvGenreFallbackIds(tmdbKey, genres) {
+  const terms = [];
+  genres.forEach((g) => { if (TV_GENRE_FALLBACK_KEYWORDS[g]) terms.push(...TV_GENRE_FALLBACK_KEYWORDS[g]); });
   if (terms.length === 0) return [];
   return resolveKeywordIds(tmdbKey, terms);
 }
@@ -444,8 +457,18 @@ export default function App() {
     setError(null);
     try {
       const kinds = prefs.type === "movie" ? ["movie"] : prefs.type === "series" ? ["tv"] : ["movie", "tv"];
-      const keywordIds = await resolveAllKeywordIds(TMDB_KEY, prefs);
-      const pools = await Promise.all(kinds.map((kind) => fetchDiscover({ tmdbKey: TMDB_KEY, kind, prefs, keywordIds })));
+      const baseKeywordIds = await resolveAllKeywordIds(TMDB_KEY, prefs);
+      const pools = await Promise.all(kinds.map(async (kind) => {
+        let keywordIds = baseKeywordIds;
+        if (kind === "tv") {
+          const unmapped = prefs.genres.filter((g) => !TV_GENRE_IDS[g]);
+          if (unmapped.length > 0) {
+            const fallbackIds = await resolveTvGenreFallbackIds(TMDB_KEY, unmapped);
+            keywordIds = Array.from(new Set([...baseKeywordIds, ...fallbackIds]));
+          }
+        }
+        return fetchDiscover({ tmdbKey: TMDB_KEY, kind, prefs, keywordIds });
+      }));
       const seen = new Set();
       const deduped = pools.flat().filter((c) => {
         const key = `${c.type}-${c.tmdbId}`;
