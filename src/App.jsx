@@ -223,6 +223,10 @@ async function enrichWithRatings(item, tmdbKey, omdbKey) {
       const rtEntry = (omdb.Ratings || []).find((r) => r.Source === "Rotten Tomatoes");
       if (rtEntry) rt = parseInt(rtEntry.Value, 10);
     }
+    if (imdb == null && item.tmdbVote > 0) {
+      // OMDb has no data for this title — fall back to TMDB's own community rating
+      return { ...item, imdb: Math.round(item.tmdbVote * 10) / 10, imdbFallback: true, rt };
+    }
     return { ...item, imdb, rt };
   } catch (e) {
     return { ...item, imdb: null, rt: null };
@@ -256,11 +260,13 @@ function Poster({ posterPath, title }) {
   );
 }
 
-function RatingBadges({ imdb, rt }) {
+function RatingBadges({ imdb, rt, imdbFallback }) {
   return (
     <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 4, fontFamily: "-apple-system, sans-serif", fontSize: 11 }}>
-        <span style={{ background: "#F5C518", color: "#2E2A33", fontWeight: 800, padding: "1px 5px", borderRadius: 4, fontSize: 10 }}>IMDb</span>
+        <span style={{ background: imdbFallback ? "#01B4E4" : "#F5C518", color: imdbFallback ? "#FFFFFF" : "#2E2A33", fontWeight: 800, padding: "1px 5px", borderRadius: 4, fontSize: 10 }}>
+          {imdbFallback ? "TMDB" : "IMDb"}
+        </span>
         <span style={{ color: "#6B6472", fontWeight: 600 }}>{imdb != null ? imdb : "—"}</span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 4, fontFamily: "-apple-system, sans-serif", fontSize: 11 }}>
@@ -467,7 +473,12 @@ export default function App() {
             keywordIds = Array.from(new Set([...baseKeywordIds, ...fallbackIds]));
           }
         }
-        return fetchDiscover({ tmdbKey: TMDB_KEY, kind, prefs, keywordIds });
+        let pool = await fetchDiscover({ tmdbKey: TMDB_KEY, kind, prefs, keywordIds });
+        if (pool.length === 0 && keywordIds.length > 0) {
+          // keyword filter matched nothing — retry without it so results aren't empty
+          pool = await fetchDiscover({ tmdbKey: TMDB_KEY, kind, prefs, keywordIds: [] });
+        }
+        return pool;
       }));
       const seen = new Set();
       const deduped = pools.flat().filter((c) => {
@@ -478,10 +489,10 @@ export default function App() {
       });
       let candidates = deduped.map((c) => ({ ...c, rank: rerankScore(c, prefs) }));
       candidates.sort((a, b) => b.rank - a.rank);
-      const top = candidates.slice(0, 18);
+      const top = candidates.slice(0, 12);
       const enriched = await Promise.all(top.map((c) => enrichWithRatings(c, TMDB_KEY, OMDB_KEY)));
       enriched.sort((a, b) => b.rank - a.rank);
-      setResults(enriched.slice(0, 15));
+      setResults(enriched.slice(0, 12));
       setShowResults(true);
     } catch (e) {
       setError(e.message || "Something went wrong while fetching picks. Check your API keys and try again.");
@@ -674,7 +685,7 @@ export default function App() {
                   <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
                     {m.type} · {m.year} · {m.genres.join(", ") || "—"}
                   </div>
-                  <RatingBadges imdb={m.imdb} rt={m.rt} />
+                  <RatingBadges imdb={m.imdb} rt={m.rt} imdbFallback={m.imdbFallback} />
                   <div style={{ fontSize: 13, lineHeight: 1.5, color: "#6B6472", marginTop: 8 }}>{m.overview}</div>
                   <button onClick={() => openSimilar(m)} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, marginTop: 10, cursor: "pointer" }}>
                     {similarOpenFor === m.tmdbId ? "Hide similar ▲" : "Similar titles ▼"}
@@ -790,7 +801,7 @@ export default function App() {
                   <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
                     {m.type} · {m.year} · {(m.genres || []).join(", ") || "—"}
                   </div>
-                  <RatingBadges imdb={m.imdb} rt={m.rt} />
+                  <RatingBadges imdb={m.imdb} rt={m.rt} imdbFallback={m.imdbFallback} />
                   <OverallRating value={m.myRating || 0} onChange={(v) => setMyRating(m.tmdbId, v)} />
                 </div>
               </div>
