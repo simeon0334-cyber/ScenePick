@@ -79,7 +79,7 @@ async function fetchDiscover({ tmdbKey, kind, prefs, keywordIds }) {
     const params = new URLSearchParams({
       api_key: tmdbKey,
       sort_by: "vote_average.desc",
-      "vote_count.gte": "150",
+      "vote_count.gte": kind === "movie" ? "150" : "20",
       language: "en-US",
       page: String(page),
     });
@@ -543,7 +543,7 @@ export default function App() {
           display: flex; gap: 14px;
           box-shadow: 0 3px 14px rgba(46,42,51,0.06);
         }
-        .tab-btn { border: none; background: transparent; padding: 8px 10px; border-radius: 10px; font-size: 11px; font-weight: 800; cursor: pointer; color: #B5A896; white-space: nowrap; }
+        .tab-btn { border: none; background: transparent; padding: 12px 10px; border-radius: 12px; font-size: 13px; font-weight: 800; cursor: pointer; color: #B5A896; white-space: nowrap; }
         .tab-btn.active { background: #2E2A33; color: #FFFFFF; }
         .field {
           width: 100%; padding: 12px 14px; border-radius: 10px; border: 1.5px solid #EAD9C8;
@@ -551,16 +551,16 @@ export default function App() {
         }
       `}</style>
 
-      <div style={{ maxWidth: 560, margin: "0 auto", padding: "40px 20px 80px" }}>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 28, gap: 16 }}>
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "26px 20px 80px" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 28, gap: 14 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 19, letterSpacing: "0.01em", color: "#2E2A33", fontWeight: 800 }}>
             <LogoMark size={30} />
             ScenePick
           </div>
-          <div style={{ display: "flex", gap: 2, background: "#F1E6DA", padding: 4, borderRadius: 14 }}>
-            <button className={`tab-btn ${view === "quiz" ? "active" : ""}`} onClick={() => setView("quiz")}>Discover</button>
-            <button className={`tab-btn ${view === "search" ? "active" : ""}`} onClick={() => setView("search")}>Search</button>
-            <button className={`tab-btn ${view === "watchlist" ? "active" : ""}`} onClick={() => setView("watchlist")}>
+          <div style={{ display: "flex", gap: 4, background: "#F1E6DA", padding: 6, borderRadius: 16, width: "100%" }}>
+            <button className={`tab-btn ${view === "quiz" ? "active" : ""}`} style={{ flex: 1 }} onClick={() => setView("quiz")}>Discover</button>
+            <button className={`tab-btn ${view === "search" ? "active" : ""}`} style={{ flex: 1 }} onClick={() => setView("search")}>Search</button>
+            <button className={`tab-btn ${view === "watchlist" ? "active" : ""}`} style={{ flex: 1 }} onClick={() => setView("watchlist")}>
               My List{watchlist.length > 0 ? ` (${watchlist.length})` : ""}
             </button>
           </div>
