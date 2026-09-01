@@ -533,15 +533,15 @@ export default function App() {
           <div style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 13, letterSpacing: "0.01em", color: "#2E2A33", fontWeight: 800, flexShrink: 0 }}>
             <LogoMark size={20} />
             ScenePick
-          </div>
-          <div style={{ display: "flex", gap: 2, background: "#F1E6DA", padding: 4, borderRadius: 14 }}>
-            <button className={`tab-btn ${view === "quiz" ? "active" : ""}`} onClick={() => setView("quiz")}>Discover</button>
-            <button className={`tab-btn ${view === "search" ? "active" : ""}`} onClick={() => setView("search")}>Search</button>
-            <button className={`tab-btn ${view === "watchlist" ? "active" : ""}`} onClick={() => setView("watchlist")}>
-              My List{watchlist.length > 0 ? ` (${watchlist.length})` : ""}
-            </button>
+                 </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 16, letterSpacing: "0.01em", color: "#2E2A33", fontWeight: 800 }}>
+            <LogoMark size={24} />
+            ScenePick
           </div>
         </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 28 }}>
+          <div style={{ display: "flex", gap: 2, background: "#F1E6DA", padding: 4, borderRadius: 14 }}>
 
         {view === "quiz" && !showResults && !loading && (
           <>
