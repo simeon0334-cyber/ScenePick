@@ -328,6 +328,7 @@ export default function App() {
   const [watchlist, setWatchlist] = useState([]);
   const [watchlistLoaded, setWatchlistLoaded] = useState(false);
   const [watchlistSort, setWatchlistSort] = useState("added");
+  const [roulette, setRoulette] = useState({ spinning: false, pick: null });
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
@@ -365,6 +366,23 @@ export default function App() {
   const removeFromWatchlist = (id) => saveWatchlist(watchlist.filter((w) => w.tmdbId !== id));
   const setMyRating = (id, rating) => saveWatchlist(watchlist.map((w) => (w.tmdbId === id ? { ...w, myRating: rating } : w)));
   const toggleWatched = (id) => saveWatchlist(watchlist.map((w) => (w.tmdbId === id ? { ...w, watched: !w.watched } : w)));
+
+  const spinRoulette = () => {
+    const eligible = watchlist.filter((w) => !w.watched);
+    if (eligible.length === 0) return;
+    setRoulette({ spinning: true, pick: eligible[Math.floor(Math.random() * eligible.length)] });
+    let ticks = 0;
+    const maxTicks = 13;
+    const interval = setInterval(() => {
+      ticks++;
+      if (ticks >= maxTicks) {
+        clearInterval(interval);
+        setRoulette({ spinning: false, pick: eligible[Math.floor(Math.random() * eligible.length)] });
+        return;
+      }
+      setRoulette({ spinning: true, pick: eligible[Math.floor(Math.random() * eligible.length)] });
+    }, 90);
+  };
 
   const sortedWatchlist = useMemo(() => {
     const list = [...watchlist];
@@ -704,6 +722,36 @@ export default function App() {
               <p style={{ color: "#B5A896", fontWeight: 600, lineHeight: 1.6 }}>
                 Nothing here yet. Go to "Discover" or "Search" and tap "+ My List" to save titles here.
               </p>
+            )}
+            {watchlistLoaded && watchlist.some((w) => !w.watched) && (
+              <button
+                className="nav-btn primary"
+                style={{ width: "100%", marginBottom: 16 }}
+                disabled={roulette.spinning}
+                onClick={spinRoulette}
+              >
+                {roulette.spinning ? "🎲 Spinning…" : "🎲 Pick one for me"}
+              </button>
+            )}
+            {roulette.pick && (
+              <div className="ticket" style={{ border: "2px solid #FF6B4A", marginBottom: 20 }}>
+                <Poster posterPath={roulette.pick.posterPath} title={roulette.pick.title} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: "#FF6B4A", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+                    {roulette.spinning ? "Spinning…" : "🎬 Tonight's pick"}
+                  </div>
+                  <span style={{ fontSize: 17, fontWeight: 800 }}>{roulette.pick.title}</span>
+                  <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
+                    {roulette.pick.type} · {roulette.pick.year}
+                  </div>
+                  {!roulette.spinning && (
+                    <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                      <button className="small-btn" onClick={spinRoulette}>🎲 Spin again</button>
+                      <button className="small-btn" onClick={() => setRoulette({ spinning: false, pick: null })}>Dismiss</button>
+                    </div>
+                  )}
+                </div>
+              </div>
             )}
             {sortedWatchlist.map((m) => (
               <div key={m.tmdbId} className="ticket" style={{ opacity: m.watched ? 0.6 : 1 }}>
