@@ -39,8 +39,8 @@ const STEPS = ["type", "genres", "moods", "pace", "era", "runtime", "ending"];
 const WATCHLIST_KEY = "scenepick_watchlist_v3";
 const POSTER_BASE = "https://image.tmdb.org/t/p/w342";
 
-const TMDB_KEY = import.meta.env.VITE_TMDB_API_KEY || "";
-const OMDB_KEY = import.meta.env.VITE_OMDB_API_KEY || "";
+const TMDB_KEY = (import.meta.env.VITE_TMDB_API_KEY || "").trim();
+const OMDB_KEY = (import.meta.env.VITE_OMDB_API_KEY || "").trim();
 
 function eraDateRange(era) {
   if (era === "classic") return { lte: "1999-12-31" };
@@ -72,38 +72,87 @@ function mapResult(r, kind) {
   };
 }
 
-async function fetchDiscover({ tmdbKey, kind, prefs }) {
+async function fetchDiscover({ tmdbKey, kind, prefs, keywordIds }) {
   const genreMap = kind === "movie" ? MOVIE_GENRE_IDS : TV_GENRE_IDS;
   const ids = prefs.genres.map((g) => genreMap[g]).filter(Boolean);
-  const params = new URLSearchParams({
-    api_key: tmdbKey,
-    sort_by: "vote_average.desc",
-    "vote_count.gte": "150",
-    language: "en-US",
-    page: "1",
-  });
-  if (ids.length > 0) params.set("with_genres", ids.join("|"));
+  const buildParams = (page) => {
+    const params = new URLSearchParams({
+      api_key: tmdbKey,
+      sort_by: "vote_average.desc",
+      "vote_count.gte": "150",
+      language: "en-US",
+      page: String(page),
+    });
+    if (ids.length > 0) params.set("with_genres", ids.join("|"));
+    if (keywordIds && keywordIds.length > 0) params.set("with_keywords", keywordIds.join("|"));
 
-  const era = singleSelected(prefs.era);
-  if (era) {
-    const range = eraDateRange(era);
-    const field = kind === "movie" ? "primary_release_date" : "first_air_date";
-    if (range.gte) params.set(`${field}.gte`, range.gte);
-    if (range.lte) params.set(`${field}.lte`, range.lte);
-  }
-  if (kind === "movie") {
-    const rtPref = singleSelected(prefs.runtime);
-    if (rtPref) {
-      const range = runtimeRange(rtPref);
-      if (range.gte) params.set("with_runtime.gte", String(range.gte));
-      if (range.lte) params.set("with_runtime.lte", String(range.lte));
+    const era = singleSelected(prefs.era);
+    if (era) {
+      const range = eraDateRange(era);
+      const field = kind === "movie" ? "primary_release_date" : "first_air_date";
+      if (range.gte) params.set(`${field}.gte`, range.gte);
+      if (range.lte) params.set(`${field}.lte`, range.lte);
     }
-  }
+    if (kind === "movie") {
+      const rtPref = singleSelected(prefs.runtime);
+      if (rtPref) {
+        const range = runtimeRange(rtPref);
+        if (range.gte) params.set("with_runtime.gte", String(range.gte));
+        if (range.lte) params.set("with_runtime.lte", String(range.lte));
+      }
+    }
+    return params;
+  };
 
-  const res = await fetch(`https://api.themoviedb.org/3/discover/${kind}?${params.toString()}`);
-  if (!res.ok) throw new Error(`TMDB ${kind} discover failed (${res.status}). Check your TMDB API key.`);
-  const data = await res.json();
-  return (data.results || []).map((r) => mapResult(r, kind));
+  const pages = await Promise.all([1, 2].map(async (page) => {
+    const res = await fetch(`https://api.themoviedb.org/3/discover/${kind}?${buildParams(page).toString()}`);
+    if (!res.ok) throw new Error(`TMDB ${kind} discover failed (${res.status}). Check your TMDB API key.`);
+    const data = await res.json();
+    return (data.results || []).map((r) => mapResult(r, kind));
+  }));
+  return pages.flat();
+}
+
+const keywordIdCache = {};
+async function resolveKeywordIds(tmdbKey, terms) {
+  const results = await Promise.all(terms.map(async (term) => {
+    if (keywordIdCache[term] !== undefined) return keywordIdCache[term];
+    try {
+      const res = await fetch(`https://api.themoviedb.org/3/search/keyword?api_key=${tmdbKey}&query=${encodeURIComponent(term)}`);
+      const data = await res.json();
+      const id = data.results && data.results.length > 0 ? data.results[0].id : null;
+      keywordIdCache[term] = id;
+      return id;
+    } catch (e) {
+      keywordIdCache[term] = null;
+      return null;
+    }
+  }));
+  return results.filter((id) => id != null);
+}
+
+const MOOD_KEYWORD_TERMS = {
+  light: ["feel good"],
+  intense: ["suspense"],
+  emotional: ["tearjerker"],
+};
+const PACE_KEYWORD_TERMS = {
+  slow: ["slow burn"],
+  fast: ["fast-paced"],
+};
+const ENDING_KEYWORD_TERMS = {
+  happy: ["happy ending"],
+  bittersweet: ["bittersweet"],
+  open: ["open ending"],
+};
+
+async function resolveAllKeywordIds(tmdbKey, prefs) {
+  const terms = [];
+  prefs.moods.forEach((m) => { if (MOOD_KEYWORD_TERMS[m]) terms.push(...MOOD_KEYWORD_TERMS[m]); });
+  prefs.pace.forEach((p) => { if (p !== "surprise" && PACE_KEYWORD_TERMS[p]) terms.push(...PACE_KEYWORD_TERMS[p]); });
+  prefs.ending.forEach((e) => { if (e !== "surprise" && ENDING_KEYWORD_TERMS[e]) terms.push(...ENDING_KEYWORD_TERMS[e]); });
+  if (terms.length === 0) return [];
+  return resolveKeywordIds(tmdbKey, terms);
 }
 
 async function fetchSimilar({ tmdbKey, tmdbId, kind }) {
@@ -377,13 +426,21 @@ export default function App() {
     setError(null);
     try {
       const kinds = prefs.type === "movie" ? ["movie"] : prefs.type === "series" ? ["tv"] : ["movie", "tv"];
-      const pools = await Promise.all(kinds.map((kind) => fetchDiscover({ tmdbKey: TMDB_KEY, kind, prefs })));
-      let candidates = pools.flat().map((c) => ({ ...c, rank: rerankScore(c, prefs) }));
+      const keywordIds = await resolveAllKeywordIds(TMDB_KEY, prefs);
+      const pools = await Promise.all(kinds.map((kind) => fetchDiscover({ tmdbKey: TMDB_KEY, kind, prefs, keywordIds })));
+      const seen = new Set();
+      const deduped = pools.flat().filter((c) => {
+        const key = `${c.type}-${c.tmdbId}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      let candidates = deduped.map((c) => ({ ...c, rank: rerankScore(c, prefs) }));
       candidates.sort((a, b) => b.rank - a.rank);
-      const top = candidates.slice(0, 8);
+      const top = candidates.slice(0, 18);
       const enriched = await Promise.all(top.map((c) => enrichWithRatings(c, TMDB_KEY, OMDB_KEY)));
       enriched.sort((a, b) => b.rank - a.rank);
-      setResults(enriched.slice(0, 6));
+      setResults(enriched.slice(0, 15));
       setShowResults(true);
     } catch (e) {
       setError(e.message || "Something went wrong while fetching picks. Check your API keys and try again.");
@@ -445,7 +502,7 @@ export default function App() {
           display: flex; gap: 14px;
           box-shadow: 0 3px 14px rgba(46,42,51,0.06);
         }
-        .tab-btn { border: none; background: transparent; padding: 10px 14px; border-radius: 12px; font-size: 12px; font-weight: 800; cursor: pointer; color: #B5A896; }
+        .tab-btn { border: none; background: transparent; padding: 8px 10px; border-radius: 10px; font-size: 11px; font-weight: 800; cursor: pointer; color: #B5A896; white-space: nowrap; }
         .tab-btn.active { background: #2E2A33; color: #FFFFFF; }
         .field {
           width: 100%; padding: 12px 14px; border-radius: 10px; border: 1.5px solid #EAD9C8;
@@ -455,8 +512,8 @@ export default function App() {
 
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "40px 20px 80px" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 15, letterSpacing: "0.02em", color: "#2E2A33", fontWeight: 800 }}>
-            <LogoMark />
+          <div style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 13, letterSpacing: "0.01em", color: "#2E2A33", fontWeight: 800, flexShrink: 0 }}>
+            <LogoMark size={20} />
             ScenePick
           </div>
           <div style={{ display: "flex", gap: 2, background: "#F1E6DA", padding: 4, borderRadius: 14 }}>
