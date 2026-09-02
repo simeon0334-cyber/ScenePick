@@ -18,13 +18,12 @@ npm run dev      # runs the app locally at http://localhost:5173
 npm run build    # builds a production-ready version into /dist
 ```
 
-## Status
+Status
 
-- UI and preference logic: done, tested with sample data
-- Live TMDB (movies/posters) + OMDb (IMDb/Rotten Tomatoes) integration: written and ready in an
-  earlier version, to be wired back in once this project is deployed somewhere with normal
-  internet access (not needed for local demo)
-- Next planned step: package this as an Android app and get it onto Google Play
+* UI and preference logic: done, tested
+* TMDB integration (posters, ratings, watch providers, similar titles): live and wired in
+* Android build pipeline (Capacitor + GitHub Actions signed release build): set up and working
+* Next planned step: add an in-app "report" option for comments (needed before Google Play submission), then submit to Google Play
 
 ## New features (from the market analysis)
 
