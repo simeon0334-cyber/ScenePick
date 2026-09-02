@@ -1,0 +1,1397 @@
+import { useState, useEffect, useMemo, useRef } from "react";
+import { db, getUid } from "./firebase";
+import { collection, query, where, orderBy, limit, getDocs, addDoc, serverTimestamp } from "firebase/firestore";
+import { fetchWatchProviders, PROVIDER_LOGO_BASE, fetchTasteCandidates } from "./lib/tmdbExtra";
+import { bumpStreak, getTasteProfile, recordTasteRating, getNotifPref, setNotifPref } from "./lib/localData";
+import { isNotificationSupported, requestNotificationPermission, scheduleDailyReminder, cancelDailyReminder } from "./lib/notifications";
+import { createGroup, joinGroup, updateMyGroupList, subscribeGroup, computeGroupMatches } from "./lib/group";
+
+const GENRES = [
+  "Action", "Comedy", "Drama", "Thriller", "Horror",
+  "Romance", "Sci-Fi", "Animation", "Crime", "Documentary",
+];
+
+const MOODS = [
+  { id: "light", label: "Light & fun" },
+  { id: "intense", label: "Intense" },
+  { id: "emotional", label: "Emotional" },
+  { id: "short", label: "Something short" },
+  { id: "binge", label: "Binge-worthy" },
+];
+
+const MOVIE_GENRE_IDS = {
+  Action: 28, Comedy: 35, Drama: 18, Thriller: 53, Horror: 27,
+  Romance: 10749, "Sci-Fi": 878, Animation: 16, Crime: 80, Documentary: 99,
+};
+const TV_GENRE_IDS = {
+  Action: 10759, Comedy: 35, Drama: 18, "Sci-Fi": 10765, Animation: 16, Crime: 80, Documentary: 99,
+};
+const ALL_GENRE_NAMES = {
+  ...Object.fromEntries(Object.entries(MOVIE_GENRE_IDS).map(([k, v]) => [v, k])),
+  ...Object.fromEntries(Object.entries(TV_GENRE_IDS).map(([k, v]) => [v, k])),
+};
+
+const MOOD_GENRE_BOOST = {
+  light: ["Comedy", "Animation"],
+  intense: ["Thriller", "Horror", "Crime", "Action"],
+  emotional: ["Drama", "Romance"],
+};
+const PACE_GENRE_BOOST = {
+  slow: ["Drama", "Romance", "Documentary"],
+  fast: ["Action", "Thriller", "Horror"],
+};
+
+const STEPS = ["type", "genres", "moods", "pace", "era", "runtime", "ending"];
+const WATCHLIST_KEY = "scenepick_watchlist_v3";
+const POSTER_BASE = "https://image.tmdb.org/t/p/w342";
+const GROUP_CODE_KEY = "scenepick_group_code_v1";
+const RECENT_PREMIERE_DAYS = 21; // titles that premiered this recently get their synopsis blurred by default
+
+function isRecentPremiere(releaseDate) {
+  if (!releaseDate) return false;
+  const d = new Date(releaseDate);
+  if (isNaN(d.getTime())) return false;
+  const days = (Date.now() - d.getTime()) / 86400000;
+  return days >= 0 && days <= RECENT_PREMIERE_DAYS;
+}
+
+const TMDB_KEY = (import.meta.env.VITE_TMDB_API_KEY || "").trim();
+
+function eraDateRange(era) {
+  if (era === "classic") return { lte: "1999-12-31" };
+  if (era === "2000s2010s") return { gte: "2000-01-01", lte: "2019-12-31" };
+  if (era === "recent") return { gte: "2020-01-01" };
+  return {};
+}
+function runtimeRange(rt) {
+  if (rt === "short") return { lte: 100 };
+  if (rt === "standard") return { gte: 90, lte: 150 };
+  if (rt === "long") return { gte: 140 };
+  return {};
+}
+function singleSelected(arr) {
+  const real = arr.filter((x) => x !== "surprise");
+  return real.length === 1 ? real[0] : null;
+}
+
+function mapResult(r, kind) {
+  const releaseDate = (kind === "movie" ? r.release_date : r.first_air_date) || "";
+  return {
+    tmdbId: r.id,
+    type: kind === "movie" ? "Movie" : "Series",
+    title: kind === "movie" ? r.title : r.name,
+    year: releaseDate.slice(0, 4) || "—",
+    releaseDate,
+    genres: (r.genre_ids || []).map((id) => ALL_GENRE_NAMES[id]).filter(Boolean),
+    overview: r.overview || "No description available.",
+    posterPath: r.poster_path,
+    tmdbVote: r.vote_average || 0,
+  };
+}
+
+async function fetchDiscover({ tmdbKey, kind, prefs, keywordIds }) {
+  const genreMap = kind === "movie" ? MOVIE_GENRE_IDS : TV_GENRE_IDS;
+  const ids = prefs.genres.map((g) => genreMap[g]).filter(Boolean);
+
+  const buildParams = (page, { withKeywords } = {}) => {
+    const params = new URLSearchParams({
+      api_key: tmdbKey,
+      sort_by: "popularity.desc", // surfaces well-known titles, not just obscure high-rated ones
+      "vote_count.gte": kind === "movie" ? "50" : "10",
+      language: "en-US",
+      page: String(page),
+    });
+    if (ids.length > 0) params.set("with_genres", ids.join("|"));
+    if (withKeywords && keywordIds && keywordIds.length > 0) params.set("with_keywords", keywordIds.join("|"));
+    return params;
+  };
+
+  const fetchPage = async (page, opts) => {
+    const res = await fetch(`https://api.themoviedb.org/3/discover/${kind}?${buildParams(page, opts).toString()}`);
+    if (!res.ok) throw new Error(`TMDB ${kind} discover failed (${res.status}). Check your TMDB API key.`);
+    const data = await res.json();
+    return (data.results || []).map((r) => mapResult(r, kind));
+  };
+
+  // Broad pool: genre-filtered only, several pages, guarantees plenty of results.
+  const broadPages = await Promise.all([1, 2, 3].map((p) => fetchPage(p)));
+  const broad = broadPages.flat();
+
+  // Bonus pool: same genre filter + keyword match (mood/pace/ending/genre-fallback), used to boost ranking, not to restrict.
+  let bonusIds = new Set();
+  if (keywordIds && keywordIds.length > 0) {
+    try {
+      const bonusPages = await Promise.all([1, 2].map((p) => fetchPage(p, { withKeywords: true })));
+      bonusPages.flat().forEach((item) => bonusIds.add(`${item.type}-${item.tmdbId}`));
+    } catch (e) {
+      // keyword-boost query failing shouldn't break the whole search
+    }
+  }
+
+  return broad.map((item) => ({ ...item, keywordMatch: bonusIds.has(`${item.type}-${item.tmdbId}`) }));
+}
+
+const keywordIdCache = {};
+async function resolveKeywordIds(tmdbKey, terms) {
+  const results = await Promise.all(terms.map(async (term) => {
+    if (keywordIdCache[term] !== undefined) return keywordIdCache[term];
+    try {
+      const res = await fetch(`https://api.themoviedb.org/3/search/keyword?api_key=${tmdbKey}&query=${encodeURIComponent(term)}`);
+      const data = await res.json();
+      const id = data.results && data.results.length > 0 ? data.results[0].id : null;
+      keywordIdCache[term] = id;
+      return id;
+    } catch (e) {
+      keywordIdCache[term] = null;
+      return null;
+    }
+  }));
+  return results.filter((id) => id != null);
+}
+
+const TV_GENRE_FALLBACK_KEYWORDS = {
+  Horror: ["horror"],
+  Thriller: ["thriller"],
+  Romance: ["romance"],
+};
+
+const MOOD_KEYWORD_TERMS = {
+  light: ["feel good"],
+  intense: ["suspense"],
+  emotional: ["tearjerker"],
+};
+const PACE_KEYWORD_TERMS = {
+  slow: ["slow burn"],
+  fast: ["fast-paced"],
+};
+const ENDING_KEYWORD_TERMS = {
+  happy: ["happy ending"],
+  bittersweet: ["bittersweet"],
+  open: ["open ending"],
+};
+
+async function resolveAllKeywordIds(tmdbKey, prefs) {
+  const terms = [];
+  prefs.moods.forEach((m) => { if (MOOD_KEYWORD_TERMS[m]) terms.push(...MOOD_KEYWORD_TERMS[m]); });
+  prefs.pace.forEach((p) => { if (p !== "surprise" && PACE_KEYWORD_TERMS[p]) terms.push(...PACE_KEYWORD_TERMS[p]); });
+  prefs.ending.forEach((e) => { if (e !== "surprise" && ENDING_KEYWORD_TERMS[e]) terms.push(...ENDING_KEYWORD_TERMS[e]); });
+  if (terms.length === 0) return [];
+  return resolveKeywordIds(tmdbKey, terms);
+}
+
+async function resolveTvGenreFallbackIds(tmdbKey, genres) {
+  const terms = [];
+  genres.forEach((g) => { if (TV_GENRE_FALLBACK_KEYWORDS[g]) terms.push(...TV_GENRE_FALLBACK_KEYWORDS[g]); });
+  if (terms.length === 0) return [];
+  return resolveKeywordIds(tmdbKey, terms);
+}
+
+async function fetchSimilar({ tmdbKey, tmdbId, kind }) {
+  const path = kind === "Movie" ? "movie" : "tv";
+  const res = await fetch(`https://api.themoviedb.org/3/${path}/${tmdbId}/similar?api_key=${tmdbKey}&language=en-US&page=1`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data.results || []).slice(0, 3).map((r) => mapResult(r, path));
+}
+
+async function searchTitles({ tmdbKey, query }) {
+  const res = await fetch(`https://api.themoviedb.org/3/search/multi?api_key=${tmdbKey}&language=en-US&query=${encodeURIComponent(query)}&page=1`);
+  if (!res.ok) throw new Error("Search failed. Check your TMDB API key.");
+  const data = await res.json();
+  return (data.results || [])
+    .filter((r) => r.media_type === "movie" || r.media_type === "tv")
+    .slice(0, 20)
+    .map((r) => mapResult(r, r.media_type));
+}
+
+async function fetchTrending({ tmdbKey }) {
+  const res = await fetch(`https://api.themoviedb.org/3/trending/all/week?api_key=${tmdbKey}&language=en-US`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return (data.results || [])
+    .filter((r) => r.media_type === "movie" || r.media_type === "tv")
+    .slice(0, 20)
+    .map((r) => mapResult(r, r.media_type));
+}
+
+function rerankScore(item, prefs, tasteWeights) {
+  let bonus = 0;
+  prefs.moods.forEach((m) => {
+    if (MOOD_GENRE_BOOST[m] && item.genres.some((g) => MOOD_GENRE_BOOST[m].includes(g))) bonus += 3;
+    if (m === "binge" && item.type === "Series") bonus += 3;
+  });
+  prefs.pace.forEach((p) => {
+    if (PACE_GENRE_BOOST[p] && item.genres.some((g) => PACE_GENRE_BOOST[p].includes(g))) bonus += 3;
+  });
+  const era = singleSelected(prefs.era);
+  if (era) {
+    const year = parseInt(item.year, 10);
+    if (!isNaN(year)) {
+      if (era === "classic" && year < 2000) bonus += 4;
+      if (era === "2000s2010s" && year >= 2000 && year <= 2019) bonus += 4;
+      if (era === "recent" && year >= 2020) bonus += 4;
+    }
+  }
+  if (item.keywordMatch) bonus += 6;
+  // Genre weights learned from the "rate a few movies" taste bootstrap — small nudge, capped
+  // so a couple of enthusiastic likes can't completely dominate the chip-based preferences.
+  if (tasteWeights) {
+    const tasteBonus = item.genres.reduce((sum, g) => sum + (tasteWeights[g] || 0), 0);
+    bonus += Math.max(-4, Math.min(4, tasteBonus * 0.8));
+  }
+  // popularity is already the primary sort signal from the API; use it as a light tiebreaker
+  return bonus + Math.min(item.tmdbVote || 0, 10) * 0.3;
+}
+
+
+
+function Poster({ posterPath, title }) {
+  if (posterPath) {
+    return (
+      <img
+        src={`${POSTER_BASE}${posterPath}`}
+        alt={title}
+        style={{ width: 64, height: 92, borderRadius: 10, objectFit: "cover", flexShrink: 0, background: "#EFE3D8" }}
+      />
+    );
+  }
+  return (
+    <div
+      style={{
+        width: 64, height: 92, borderRadius: 10, flexShrink: 0,
+        background: "linear-gradient(160deg, #E8D9C8, #D9C4AC)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+      title={`No poster for ${title}`}
+    >
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" opacity="0.5">
+        <path d="M4 4h16v16H4V4z" stroke="#6B6472" strokeWidth="1.6" />
+        <path d="M4 15l4-4 3 3 5-6 4 5" stroke="#6B6472" strokeWidth="1.6" />
+      </svg>
+    </div>
+  );
+}
+
+function RatingBadges({ rating }) {
+  return (
+    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4, fontFamily: "-apple-system, sans-serif", fontSize: 11 }}>
+        <span style={{ background: "#01B4E4", color: "#FFFFFF", fontWeight: 800, padding: "1px 5px", borderRadius: 4, fontSize: 10 }}>TMDB</span>
+        <span style={{ color: "#6B6472", fontWeight: 600 }}>{rating != null ? rating : "—"}</span>
+      </div>
+    </div>
+  );
+}
+
+function ProviderLogo({ item }) {
+  return (
+    <img
+      src={`${PROVIDER_LOGO_BASE}${item.logo_path}`}
+      alt={item.provider_name}
+      title={item.provider_name}
+      style={{ width: 34, height: 34, borderRadius: 8, flexShrink: 0 }}
+    />
+  );
+}
+
+function WatchProviders({ tmdbId, type }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState(undefined); // undefined = not fetched, null = fetched but empty
+
+  const toggle = async () => {
+    const next = !open;
+    setOpen(next);
+    if (next && data === undefined) {
+      setLoading(true);
+      const result = await fetchWatchProviders({ tmdbKey: TMDB_KEY, tmdbId, kind: type });
+      setData(result);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button onClick={toggle} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, cursor: "pointer" }}>
+        {open ? "Hide where to watch ▲" : "📺 Where to watch ▼"}
+      </button>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          {loading && <p style={{ fontSize: 12, color: "#B5A896" }}>Checking streaming availability…</p>}
+          {!loading && !data && <p style={{ fontSize: 12, color: "#B5A896" }}>No streaming info found for your region yet.</p>}
+          {!loading && data && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {data.flatrate && data.flatrate.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>Stream</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {data.flatrate.map((p) => <ProviderLogo key={p.provider_id} item={p} />)}
+                  </div>
+                </div>
+              )}
+              {data.rent && data.rent.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>Rent</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {data.rent.map((p) => <ProviderLogo key={p.provider_id} item={p} />)}
+                  </div>
+                </div>
+              )}
+              {data.buy && data.buy.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>Buy</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {data.buy.map((p) => <ProviderLogo key={p.provider_id} item={p} />)}
+                  </div>
+                </div>
+              )}
+              {!data.flatrate && !data.rent && !data.buy && (
+                <p style={{ fontSize: 12, color: "#B5A896" }}>No streaming, rental, or purchase options found for your region.</p>
+              )}
+              <div style={{ fontSize: 10, color: "#D9C4B0", fontWeight: 600 }}>Streaming data provided by JustWatch, via TMDB.</div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SpoilerSafeOverview({ overview, releaseDate }) {
+  const [revealed, setRevealed] = useState(false);
+  const guarded = isRecentPremiere(releaseDate) && !revealed;
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{
+        fontSize: 13, lineHeight: 1.5, color: "#6B6472",
+        filter: guarded ? "blur(5px)" : "none", userSelect: guarded ? "none" : "auto",
+      }}>
+        {overview}
+      </div>
+      {guarded && (
+        <button
+          onClick={() => setRevealed(true)}
+          style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 11, padding: 0, marginTop: 4, cursor: "pointer" }}
+        >
+          ⚠️ Recently released — show synopsis anyway
+        </button>
+      )}
+    </div>
+  );
+}
+
+function StreakBadge({ count }) {
+  if (!count || count < 2) return null;
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 800,
+      color: "#FF6B4A", background: "#FFF0EA", padding: "5px 10px", borderRadius: 12,
+    }}>
+      🔥 {count}-day streak
+    </div>
+  );
+}
+
+function OnThisDayBanner({ items }) {
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed || items.length === 0) return null;
+  return (
+    <div style={{ background: "#FFF0EA", border: "1.5px solid #FFD9CB", borderRadius: 14, padding: "12px 14px", marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#6B6472", lineHeight: 1.5 }}>
+          📅 On this day, you watched <strong>{items.map((i) => i.title).join(", ")}</strong> — still feeling it?
+        </div>
+        <button onClick={() => setDismissed(true)} style={{ border: "none", background: "transparent", color: "#B5A896", fontWeight: 800, cursor: "pointer", fontSize: 14, lineHeight: 1 }}>×</button>
+      </div>
+    </div>
+  );
+}
+
+function TasteCheck({ onClose, onApplied }) {
+  const [candidates, setCandidates] = useState(null);
+  const [index, setIndex] = useState(0);
+  const [ratedCount, setRatedCount] = useState(0);
+
+  useEffect(() => {
+    (async () => {
+      const list = await fetchTasteCandidates({ tmdbKey: TMDB_KEY, count: 8 });
+      setCandidates(list);
+    })();
+  }, []);
+
+  const rate = (liked) => {
+    const item = candidates[index];
+    const genreNames = (item.genreIds || []).map((id) => ALL_GENRE_NAMES[id]).filter(Boolean);
+    recordTasteRating({ tmdbId: item.tmdbId, genreNames, liked });
+    setRatedCount((c) => c + 1);
+    if (index + 1 >= candidates.length) { onApplied(); onClose(); }
+    else setIndex(index + 1);
+  };
+  const skip = () => {
+    if (index + 1 >= candidates.length) { onApplied(); onClose(); }
+    else setIndex(index + 1);
+  };
+
+  return (
+    <div style={{ background: "#FFFFFF", borderRadius: 16, padding: 20, marginBottom: 20, boxShadow: "0 3px 14px rgba(46,42,51,0.06)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <span style={{ fontSize: 13, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em" }}>🎯 Quick taste check</span>
+        <button onClick={onClose} style={{ border: "none", background: "transparent", color: "#B5A896", fontWeight: 800, cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+      </div>
+      {!candidates && <p style={{ color: "#B5A896", fontWeight: 600, fontSize: 13 }}>Loading a few movies…</p>}
+      {candidates && candidates.length === 0 && <p style={{ color: "#B5A896", fontWeight: 600, fontSize: 13 }}>Couldn't load titles right now — try again later.</p>}
+      {candidates && candidates[index] && (
+        <div style={{ display: "flex", gap: 14 }}>
+          <Poster posterPath={candidates[index].posterPath} title={candidates[index].title} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 800 }}>{candidates[index].title}</div>
+            <div style={{ fontSize: 11, color: "#B5A896", fontWeight: 600, marginTop: 2, marginBottom: 10 }}>{candidates[index].year} · {index + 1} of {candidates.length}</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="small-btn added" onClick={() => rate(true)}>👍 Loved it</button>
+              <button className="small-btn remove" onClick={() => rate(false)}>👎 Not for me</button>
+              <button className="small-btn" onClick={skip}>Haven't seen it</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LogoMark({ size = 26 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 100 100" fill="none">
+      <rect width="100" height="100" rx="22" fill="#FF6B4A" />
+      <path d="M28 42 L37 82 L44 82 L46 48 L54 48 L56 82 L63 82 L72 42 Z" fill="#FFFFFF" />
+      <path d="M28 43 a9 9 0 0 1 11 -13 a10 10 0 0 1 22 0 a9 9 0 0 1 11 13 Z" fill="#FFFFFF" />
+      <circle cx="50" cy="60" r="17" fill="#FF6B4A" stroke="#FFFFFF" strokeWidth="2.4" />
+      <polygon points="45,52 45,68 59,60" fill="#FFFFFF" />
+    </svg>
+  );
+}
+
+function Chip({ active, onClick, children, variant }) {
+  return (
+    <button onClick={onClick} className={`chip ${variant === "mood" ? "mood-chip" : ""} ${active ? "active" : ""}`}>
+      {children}
+    </button>
+  );
+}
+
+// Google Play UGC policy requires an in-app way to report objectionable content.
+// Writes a lightweight record to a separate "reports" collection — kept apart from
+// "comments" so the report rule can be create-only and never needs write access to
+// other users' documents.
+async function reportComment(c) {
+  try {
+    await addDoc(collection(db, "reports"), {
+      commentId: c.id,
+      tmdbId: c.tmdbId,
+      type: c.type,
+      commentText: c.text,
+      commentNickname: c.nickname || "Anonymous",
+      reportedBy: getUid(),
+      createdAt: serverTimestamp(),
+    });
+    return true;
+  } catch (e) {
+    console.error("Failed to report comment", e);
+    return false;
+  }
+}
+
+function CommentItem({ c }) {
+  const [revealed, setRevealed] = useState(false);
+  const [reportState, setReportState] = useState("idle"); // idle | sending | done | error
+
+  const handleReport = async () => {
+    if (reportState !== "idle") return;
+    setReportState("sending");
+    const ok = await reportComment(c);
+    setReportState(ok ? "done" : "error");
+  };
+
+  return (
+    <div style={{ padding: "10px 0", borderBottom: "1px solid #F1E6DA" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+        <span style={{ fontSize: 12, fontWeight: 800, color: "#2E2A33" }}>{c.nickname || "Anonymous"}</span>
+        {c.spoiler && !revealed && (
+          <button
+            onClick={() => setRevealed(true)}
+            style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+          >
+            ⚠️ Show spoiler
+          </button>
+        )}
+      </div>
+      <div style={{ fontSize: 13, color: "#6B6472", lineHeight: 1.5, filter: c.spoiler && !revealed ? "blur(5px)" : "none", userSelect: c.spoiler && !revealed ? "none" : "auto" }}>
+        {c.text}
+      </div>
+      <div style={{ marginTop: 4, textAlign: "right" }}>
+        {reportState === "done" ? (
+          <span style={{ fontSize: 10, color: "#B5A896" }}>Reported ✓</span>
+        ) : (
+          <button
+            onClick={handleReport}
+            disabled={reportState === "sending"}
+            style={{ border: "none", background: "transparent", color: "#B5A896", fontSize: 10, cursor: "pointer", padding: 0 }}
+          >
+            {reportState === "sending" ? "Reporting…" : reportState === "error" ? "Failed — try again" : "🚩 Report"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CommentsSection({ tmdbId, type }) {
+  const [open, setOpen] = useState(false);
+  const [comments, setComments] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [text, setText] = useState("");
+  const [spoiler, setSpoiler] = useState(false);
+  const [nickname, setNickname] = useState(() => localStorage.getItem("scenepick_nickname") || "");
+  const [posting, setPosting] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const q = query(
+        collection(db, "comments"),
+        where("tmdbId", "==", tmdbId),
+        where("type", "==", type),
+        orderBy("createdAt", "desc"),
+        limit(50)
+      );
+      const snap = await getDocs(q);
+      setComments(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    } catch (e) {
+      console.error("Failed to load comments", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleOpen = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && comments.length === 0) load();
+  };
+
+  const post = async () => {
+    if (!text.trim()) return;
+    const finalNickname = nickname.trim() || "Anonymous";
+    localStorage.setItem("scenepick_nickname", finalNickname);
+    setPosting(true);
+    try {
+      const uid = getUid();
+      const newComment = { tmdbId, type, text: text.trim(), spoiler, nickname: finalNickname, uid, createdAt: serverTimestamp() };
+      await addDoc(collection(db, "comments"), newComment);
+      setComments((prev) => [{ ...newComment, id: `local-${Date.now()}` }, ...prev]);
+      setText("");
+      setSpoiler(false);
+    } catch (e) {
+      console.error("Failed to post comment", e);
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button onClick={toggleOpen} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, cursor: "pointer" }}>
+        {open ? "Hide comments ▲" : "💬 Comments ▼"}
+      </button>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+            <input
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              placeholder="Your name"
+              className="field"
+              style={{ marginBottom: 0 }}
+            />
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Share your thoughts…"
+              rows={2}
+              className="field"
+              style={{ marginBottom: 0, resize: "vertical", fontFamily: "-apple-system, sans-serif" }}
+            />
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#6B6472", fontWeight: 600 }}>
+              <input type="checkbox" checked={spoiler} onChange={(e) => setSpoiler(e.target.checked)} />
+              Contains spoilers
+            </label>
+            <button className="small-btn" disabled={posting || !text.trim()} onClick={post} style={{ alignSelf: "flex-start" }}>
+              {posting ? "Posting…" : "Post comment"}
+            </button>
+          </div>
+          {loading && <p style={{ fontSize: 12, color: "#B5A896" }}>Loading comments…</p>}
+          {!loading && comments.length === 0 && <p style={{ fontSize: 12, color: "#B5A896" }}>No comments yet — be the first.</p>}
+          {comments.map((c) => <CommentItem key={c.id} c={c} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MiniCard({ m, isAdded, onAdd }) {
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 12px", background: "#FFF9F3", borderRadius: 12, marginBottom: 8 }}>
+      <Poster posterPath={m.posterPath} title={m.title} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 800 }}>{m.title}</div>
+        <div style={{ fontSize: 11, color: "#B5A896", fontWeight: 600, marginTop: 2 }}>
+          {m.type} · {m.year}{m.tmdbVote ? ` · ★ ${Math.round(m.tmdbVote * 10) / 10}` : ""}
+        </div>
+      </div>
+      <button className={`small-btn ${isAdded ? "added" : ""}`} onClick={onAdd}>{isAdded ? "✓" : "+ Add"}</button>
+    </div>
+  );
+}
+
+function OverallRating({ value, onChange }) {
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: "#B5A896", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        Your rating {value > 0 ? `— ${value}/10` : ""}
+      </div>
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+        {Array.from({ length: 10 }, (_, i) => i + 1).map((n) => (
+          <button
+            key={n}
+            onClick={() => onChange(n === value ? 0 : n)}
+            style={{
+              width: 22, height: 26, borderRadius: 5, border: "none", cursor: "pointer",
+              background: n <= value ? "#FF6B4A" : "#F1E6DA",
+              color: n <= value ? "#FFFFFF" : "#B5A896",
+              fontSize: 10, fontWeight: 700,
+            }}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AboutSection() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginTop: 40, paddingTop: 20, borderTop: "1px solid #EFE3D8", textAlign: "center" }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{ border: "none", background: "transparent", color: "#B5A896", fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+      >
+        ℹ️ About & Credits
+      </button>
+      {open && (
+        <div style={{ marginTop: 16, fontSize: 12, color: "#8A8290", lineHeight: 1.7 }}>
+          <img
+            src="/tmdb-logo.svg"
+            alt="The Movie Database"
+            style={{ height: 20, marginBottom: 10, opacity: 0.85 }}
+          />
+          <p style={{ maxWidth: 340, margin: "0 auto 10px" }}>
+            This product uses the TMDB API but is not endorsed or certified by TMDB.
+          </p>
+          <p>
+            <a href="https://simeon0334-cyber.github.io/ScenePick/privacy.html" target="_blank" rel="noopener noreferrer" style={{ color: "#FF6B4A" }}>Privacy Policy</a>
+            {" · "}
+            <a href="https://simeon0334-cyber.github.io/ScenePick/terms.html" target="_blank" rel="noopener noreferrer" style={{ color: "#FF6B4A" }}>Terms of Use</a>
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GroupPick({ watchlist, isInWatchlist, addToWatchlist }) {
+  const [code, setCode] = useState(() => { try { return localStorage.getItem(GROUP_CODE_KEY) || ""; } catch (e) { return ""; } });
+  const [joinInput, setJoinInput] = useState("");
+  const [nickname, setNickname] = useState(() => localStorage.getItem("scenepick_nickname") || "");
+  const [groupData, setGroupData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [pick, setPick] = useState(null);
+  const [open, setOpen] = useState(false);
+  const unsubRef = useRef(null);
+
+  const unwatched = watchlist.filter((w) => !w.watched);
+
+  useEffect(() => {
+    if (!code) return;
+    if (unsubRef.current) unsubRef.current();
+    unsubRef.current = subscribeGroup(code, setGroupData);
+    return () => { if (unsubRef.current) unsubRef.current(); };
+  }, [code]);
+
+  // Keep the shared list current as the local watchlist changes (marking things watched, etc).
+  useEffect(() => {
+    if (!code) return;
+    updateMyGroupList({ code, list: unwatched });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, watchlist.length, watchlist.map((w) => `${w.tmdbId}-${w.watched}`).join(",")]);
+
+  const persistCode = (c) => {
+    setCode(c);
+    localStorage.setItem(GROUP_CODE_KEY, c);
+  };
+
+  const handleCreate = async () => {
+    setBusy(true); setErrorMsg(null);
+    try {
+      const newCode = await createGroup({ nickname: nickname.trim() || "You", list: unwatched });
+      localStorage.setItem("scenepick_nickname", nickname.trim() || "You");
+      persistCode(newCode);
+    } catch (e) {
+      setErrorMsg(e.message || "Couldn't create a room.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleJoin = async () => {
+    if (!joinInput.trim()) return;
+    setBusy(true); setErrorMsg(null);
+    try {
+      const joined = await joinGroup({ code: joinInput, nickname: nickname.trim() || "You", list: unwatched });
+      localStorage.setItem("scenepick_nickname", nickname.trim() || "You");
+      persistCode(joined);
+    } catch (e) {
+      setErrorMsg(e.message || "Couldn't join that room.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const leaveRoom = () => {
+    persistCode("");
+    setGroupData(null);
+    setPick(null);
+  };
+
+  const { matches, isOverlap } = groupData ? computeGroupMatches(groupData.members) : { matches: [], isOverlap: false };
+
+  const spin = () => {
+    if (matches.length === 0) return;
+    setPick(matches[Math.floor(Math.random() * matches.length)]);
+  };
+
+  const memberCount = groupData ? Object.keys(groupData.members || {}).length : 0;
+
+  return (
+    <div style={{ background: "#FFFFFF", borderRadius: 16, padding: open ? 20 : "14px 16px", marginBottom: 20, boxShadow: "0 3px 14px rgba(46,42,51,0.06)" }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          border: "none", background: "transparent", padding: 0, width: "100%", cursor: "pointer",
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          marginBottom: open ? 14 : 0,
+        }}
+      >
+        <span style={{ fontSize: 13, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          👥 Pick together{code && !open ? ` · ${code}` : ""}
+        </span>
+        <span style={{ fontSize: 13, fontWeight: 800, color: "#FF6B4A" }}>{open ? "Hide ▲" : "Open ▼"}</span>
+      </button>
+
+      {open && (<>
+      {!code && (
+        <div>
+          <p style={{ fontSize: 13, color: "#6B6472", lineHeight: 1.6, margin: "0 0 14px" }}>
+            Share a room with someone else and we'll find something you both already saved.
+          </p>
+          <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Your name" className="field" />
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+            <button className="nav-btn primary" disabled={busy} onClick={handleCreate}>Start a room</button>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input value={joinInput} onChange={(e) => setJoinInput(e.target.value.toUpperCase())} placeholder="Enter a room code" className="field" style={{ marginBottom: 0, flex: 1, minWidth: 140 }} />
+            <button className="nav-btn ghost" disabled={busy} onClick={handleJoin}>Join</button>
+          </div>
+          {errorMsg && <p style={{ color: "#D9534F", fontSize: 12, fontWeight: 600, marginTop: 10 }}>{errorMsg}</p>}
+        </div>
+      )}
+
+      {code && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "0.08em" }}>{code}</div>
+              <div style={{ fontSize: 12, color: "#B5A896", fontWeight: 600 }}>{memberCount} {memberCount === 1 ? "person" : "people"} in this room — share the code to invite more</div>
+            </div>
+            <button className="small-btn remove" onClick={leaveRoom}>Leave</button>
+          </div>
+
+          {memberCount < 2 && <p style={{ fontSize: 13, color: "#B5A896", fontWeight: 600 }}>Waiting for someone to join with this code…</p>}
+
+          {memberCount >= 2 && (
+            <>
+              <p style={{ fontSize: 12, color: "#B5A896", fontWeight: 600, marginBottom: 10 }}>
+                {isOverlap ? "✨ Everyone already has these saved:" : "No exact overlap yet — here's everything the room has saved:"}
+              </p>
+              <button className="nav-btn primary" style={{ width: "100%", marginBottom: 12 }} disabled={matches.length === 0} onClick={spin}>
+                🎲 Pick for us
+              </button>
+              {pick && (
+                <div className="ticket" style={{ border: "2px solid #FF6B4A" }}>
+                  <Poster posterPath={pick.posterPath} title={pick.title} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ fontSize: 16, fontWeight: 800 }}>{pick.title}</span>
+                    <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>{pick.type} · {pick.year}</div>
+                    {!isInWatchlist(pick.tmdbId) && (
+                      <button className="small-btn" style={{ marginTop: 8 }} onClick={() => addToWatchlist(pick)}>+ My List</button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+      </>)}
+    </div>
+  );
+}
+
+export default function App() {
+  const [view, setView] = useState("quiz");
+  const [step, setStep] = useState(0);
+  const [showResults, setShowResults] = useState(false);
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const [watchlist, setWatchlist] = useState([]);
+  const [watchlistLoaded, setWatchlistLoaded] = useState(false);
+  const [watchlistSort, setWatchlistSort] = useState("added");
+  const [roulette, setRoulette] = useState({ spinning: false, pick: null });
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [trending, setTrending] = useState([]);
+  const [trendingLoaded, setTrendingLoaded] = useState(false);
+
+  const [similarOpenFor, setSimilarOpenFor] = useState(null);
+  const [similarItems, setSimilarItems] = useState({});
+
+  const [prefs, setPrefs] = useState({
+    type: "either", genres: [], moods: [], pace: [], era: [], runtime: [], ending: [],
+  });
+
+  const [streak, setStreak] = useState(() => ({ count: 0 }));
+  const [tasteProfile, setTasteProfile] = useState(() => getTasteProfile());
+  const [tasteCheckOpen, setTasteCheckOpen] = useState(false);
+  const [notifOn, setNotifOn] = useState(() => getNotifPref());
+  const [notifSupported, setNotifSupported] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(WATCHLIST_KEY);
+      if (raw) setWatchlist(JSON.parse(raw));
+    } catch (e) {
+      // no saved watchlist yet
+    } finally {
+      setWatchlistLoaded(true);
+    }
+    setStreak(bumpStreak());
+    isNotificationSupported().then(setNotifSupported);
+  }, []);
+
+  const toggleNotifications = async () => {
+    if (!notifOn) {
+      const permission = await requestNotificationPermission();
+      if (permission !== "granted") { setNotifPref(false); setNotifOn(false); return; }
+      await scheduleDailyReminder(watchlist.filter((w) => !w.watched).length);
+      setNotifPref(true); setNotifOn(true);
+    } else {
+      await cancelDailyReminder();
+      setNotifPref(false); setNotifOn(false);
+    }
+  };
+
+  const saveWatchlist = (next) => {
+    setWatchlist(next);
+    localStorage.setItem(WATCHLIST_KEY, JSON.stringify(next));
+  };
+  const isInWatchlist = (id) => watchlist.some((w) => w.tmdbId === id);
+  const addToWatchlist = (item) => {
+    if (isInWatchlist(item.tmdbId)) return;
+    saveWatchlist([...watchlist, { ...item, myRating: 0, watched: false, addedAt: Date.now() }]);
+  };
+  const removeFromWatchlist = (id) => saveWatchlist(watchlist.filter((w) => w.tmdbId !== id));
+  const setMyRating = (id, rating) => saveWatchlist(watchlist.map((w) => (w.tmdbId === id ? { ...w, myRating: rating } : w)));
+  const toggleWatched = (id) => saveWatchlist(watchlist.map((w) => (
+    w.tmdbId === id ? { ...w, watched: !w.watched, watchedAt: !w.watched ? Date.now() : null } : w
+  )));
+  // "On this day" — anything marked watched on this month/day in a previous year (±2 days).
+  const onThisDayItems = useMemo(() => {
+    const today = new Date();
+    return watchlist.filter((w) => {
+      if (!w.watchedAt) return false;
+      const d = new Date(w.watchedAt);
+      if (d.getFullYear() >= today.getFullYear()) return false;
+      const thisYear = new Date(today.getFullYear(), d.getMonth(), d.getDate());
+      const diffDays = Math.abs((today - thisYear) / 86400000);
+      return diffDays <= 2;
+    });
+  }, [watchlist]);
+
+  const spinRoulette = () => {
+    const eligible = watchlist.filter((w) => !w.watched);
+    if (eligible.length === 0) return;
+    setRoulette({ spinning: true, pick: eligible[Math.floor(Math.random() * eligible.length)] });
+    let ticks = 0;
+    const maxTicks = 13;
+    const interval = setInterval(() => {
+      ticks++;
+      if (ticks >= maxTicks) {
+        clearInterval(interval);
+        setRoulette({ spinning: false, pick: eligible[Math.floor(Math.random() * eligible.length)] });
+        return;
+      }
+      setRoulette({ spinning: true, pick: eligible[Math.floor(Math.random() * eligible.length)] });
+    }, 90);
+  };
+
+  const sortedWatchlist = useMemo(() => {
+    const list = [...watchlist];
+    if (watchlistSort === "rating") return list.sort((a, b) => (b.myRating || 0) - (a.myRating || 0));
+    if (watchlistSort === "year") return list.sort((a, b) => (b.year || 0) - (a.year || 0));
+    if (watchlistSort === "title") return list.sort((a, b) => a.title.localeCompare(b.title));
+    return list.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+  }, [watchlist, watchlistSort]);
+
+  useEffect(() => {
+    if (!TMDB_KEY || trendingLoaded) return;
+    (async () => {
+      const t = await fetchTrending({ tmdbKey: TMDB_KEY });
+      setTrending(t);
+      setTrendingLoaded(true);
+    })();
+  }, [TMDB_KEY, trendingLoaded]);
+
+  useEffect(() => {
+    if (!searchQuery.trim() || !TMDB_KEY) { setSearchResults([]); return; }
+    const handle = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const r = await searchTitles({ tmdbKey: TMDB_KEY, query: searchQuery.trim() });
+        setSearchResults(r);
+      } catch (e) {
+        setSearchResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 450);
+    return () => clearTimeout(handle);
+  }, [searchQuery, TMDB_KEY]);
+
+  const toggleGenre = (g) => setPrefs((p) => ({ ...p, genres: p.genres.includes(g) ? p.genres.filter((x) => x !== g) : [...p.genres, g] }));
+  const toggleMood = (m) => setPrefs((p) => ({ ...p, moods: p.moods.includes(m) ? p.moods.filter((x) => x !== m) : [...p.moods, m] }));
+  const toggleSurprisable = (field, value) => setPrefs((p) => {
+    const current = p[field];
+    if (value === "surprise") return { ...p, [field]: current.includes("surprise") ? [] : ["surprise"] };
+    const withoutSurprise = current.filter((x) => x !== "surprise");
+    const has = withoutSurprise.includes(value);
+    return { ...p, [field]: has ? withoutSurprise.filter((x) => x !== value) : [...withoutSurprise, value] };
+  });
+
+  const canAdvance = () => {
+    const k = STEPS[step];
+    if (k === "type") return true;
+    if (k === "genres") return prefs.genres.length > 0;
+    if (k === "moods") return prefs.moods.length > 0;
+    if (k === "pace") return prefs.pace.length > 0;
+    if (k === "era") return prefs.era.length > 0;
+    if (k === "runtime") return prefs.runtime.length > 0;
+    if (k === "ending") return prefs.ending.length > 0;
+    return true;
+  };
+
+  const runSearch = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const kinds = prefs.type === "movie" ? ["movie"] : prefs.type === "series" ? ["tv"] : ["movie", "tv"];
+      const baseKeywordIds = await resolveAllKeywordIds(TMDB_KEY, prefs);
+      const pools = await Promise.all(kinds.map(async (kind) => {
+        let keywordIds = baseKeywordIds;
+        if (kind === "tv") {
+          const unmapped = prefs.genres.filter((g) => !TV_GENRE_IDS[g]);
+          if (unmapped.length > 0) {
+            const fallbackIds = await resolveTvGenreFallbackIds(TMDB_KEY, unmapped);
+            keywordIds = Array.from(new Set([...baseKeywordIds, ...fallbackIds]));
+          }
+        }
+        let pool = await fetchDiscover({ tmdbKey: TMDB_KEY, kind, prefs, keywordIds });
+        if (pool.length === 0 && keywordIds.length > 0) {
+          // keyword filter matched nothing — retry without it so results aren't empty
+          pool = await fetchDiscover({ tmdbKey: TMDB_KEY, kind, prefs, keywordIds: [] });
+        }
+        return pool;
+      }));
+      const seen = new Set();
+      const deduped = pools.flat().filter((c) => {
+        const key = `${c.type}-${c.tmdbId}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      let candidates = deduped.map((c) => ({ ...c, rank: rerankScore(c, prefs, tasteProfile.genreWeights) }));
+      candidates.sort((a, b) => b.rank - a.rank);
+      setResults(candidates.slice(0, 24));
+      setShowResults(true);
+    } catch (e) {
+      setError(e.message || "Something went wrong while fetching picks. Check your API keys and try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openSimilar = async (item) => {
+    if (similarOpenFor === item.tmdbId) { setSimilarOpenFor(null); return; }
+    setSimilarOpenFor(item.tmdbId);
+    if (!similarItems[item.tmdbId]) {
+      const sim = await fetchSimilar({ tmdbKey: TMDB_KEY, tmdbId: item.tmdbId, kind: item.type });
+      setSimilarItems((prev) => ({ ...prev, [item.tmdbId]: sim }));
+    }
+  };
+
+  const goNext = () => { if (step < STEPS.length - 1) setStep(step + 1); else runSearch(); };
+  const goBack = () => { if (showResults) { setShowResults(false); return; } if (step > 0) setStep(step - 1); };
+  const restart = () => {
+    setPrefs({ type: "either", genres: [], moods: [], pace: [], era: [], runtime: [], ending: [] });
+    setStep(0); setShowResults(false); setResults([]); setError(null);
+  };
+
+  const key = STEPS[step];
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#FBF3EC", color: "#2E2A33", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+      <style>{`
+        * { box-sizing: border-box; }
+        .chip {
+          border: 1.5px solid #EAD9C8; background: #FFFFFF; color: #6B6472;
+          padding: 11px 19px; border-radius: 14px; font-size: 14px; font-weight: 600;
+          letter-spacing: 0.01em; cursor: pointer; transition: all 0.15s ease;
+        }
+        .chip:hover { border-color: #FF6B4A; color: #2E2A33; }
+        .chip.active { background: #FF6B4A; border-color: #FF6B4A; color: #FFFFFF; }
+        .mood-chip.active { background: #2F9E8F; border-color: #2F9E8F; color: #FFFFFF; }
+        .nav-btn {
+          border: none; padding: 14px 30px; border-radius: 14px; font-size: 15px;
+          font-weight: 800; letter-spacing: 0.01em; cursor: pointer;
+          transition: transform 0.12s ease, opacity 0.12s ease;
+        }
+        .nav-btn.primary { background: #FF6B4A; color: #FFFFFF; box-shadow: 0 6px 16px rgba(255,107,74,0.28); }
+        .nav-btn.primary:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
+        .nav-btn.primary:not(:disabled):hover { transform: translateY(-1px); }
+        .nav-btn.ghost { background: transparent; color: #8A8290; border: 1.5px solid #EAD9C8; }
+        .nav-btn.ghost:hover { color: #2E2A33; border-color: #D9C4B0; }
+        .small-btn {
+          border: 1.5px solid #EAD9C8; background: #FFFFFF; color: #6B6472;
+          padding: 7px 12px; border-radius: 10px; font-size: 12px; font-weight: 700;
+          cursor: pointer; transition: all 0.15s ease; white-space: nowrap;
+        }
+        .small-btn.added { background: #2F9E8F; border-color: #2F9E8F; color: #FFFFFF; }
+        .small-btn.remove { color: #D9534F; border-color: #F2D6D3; }
+        .ticket {
+          position: relative; background: #FFFFFF; border-radius: 16px;
+          padding: 16px; margin-bottom: 14px; overflow: hidden;
+          display: flex; gap: 14px;
+          box-shadow: 0 3px 14px rgba(46,42,51,0.06);
+        }
+        .tab-btn { border: none; background: transparent; padding: 12px 10px; border-radius: 12px; font-size: 13px; font-weight: 800; cursor: pointer; color: #B5A896; white-space: nowrap; }
+        .tab-btn.active { background: #2E2A33; color: #FFFFFF; }
+        .field {
+          width: 100%; padding: 12px 14px; border-radius: 10px; border: 1.5px solid #EAD9C8;
+          font-size: 14px; margin-bottom: 14px; font-family: -apple-system, sans-serif;
+        }
+      `}</style>
+
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "26px 20px 80px" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 28, gap: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, width: "100%" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 19, letterSpacing: "0.01em", color: "#2E2A33", fontWeight: 800 }}>
+              <LogoMark size={30} />
+              ScenePick
+            </div>
+            <StreakBadge count={streak.count} />
+          </div>
+          <div style={{ display: "flex", gap: 4, background: "#F1E6DA", padding: 6, borderRadius: 16, width: "100%" }}>
+            <button className={`tab-btn ${view === "quiz" ? "active" : ""}`} style={{ flex: 1 }} onClick={() => setView("quiz")}>Discover</button>
+            <button className={`tab-btn ${view === "search" ? "active" : ""}`} style={{ flex: 1 }} onClick={() => setView("search")}>Search</button>
+            <button className={`tab-btn ${view === "watchlist" ? "active" : ""}`} style={{ flex: 1 }} onClick={() => setView("watchlist")}>
+              My List{watchlist.length > 0 ? ` (${watchlist.length})` : ""}
+            </button>
+          </div>
+        </div>
+
+        {view === "quiz" && !showResults && !loading && (
+          <>
+            {tasteCheckOpen && (
+              <TasteCheck
+                onClose={() => setTasteCheckOpen(false)}
+                onApplied={() => setTasteProfile(getTasteProfile())}
+              />
+            )}
+            <div style={{ display: "flex", gap: 5, marginBottom: 28 }}>
+              {STEPS.map((s, i) => <div key={s} style={{ height: 4, flex: 1, borderRadius: 3, background: i <= step ? "#FF6B4A" : "#EFE3D8" }} />)}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: "#B5A896", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                Step {step + 1} of {STEPS.length}
+              </div>
+              {step === 0 && !tasteCheckOpen && (
+                <button onClick={() => setTasteCheckOpen(true)} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>
+                  🎯 Rate a few movies
+                </button>
+              )}
+            </div>
+
+            {key === "type" && (<>
+              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 24px", lineHeight: 1.15 }}>Movie, series, or either?</h1>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {[{ id: "either", l: "Either" }, { id: "movie", l: "Movie" }, { id: "series", l: "Series" }].map((o) => (
+                  <Chip key={o.id} active={prefs.type === o.id} onClick={() => setPrefs((p) => ({ ...p, type: o.id }))}>{o.l}</Chip>
+                ))}
+              </div>
+            </>)}
+
+            {key === "genres" && (<>
+              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 24px", lineHeight: 1.15 }}>Pick a few genres</h1>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {GENRES.map((g) => <Chip key={g} active={prefs.genres.includes(g)} onClick={() => toggleGenre(g)}>{g}</Chip>)}
+              </div>
+            </>)}
+
+            {key === "moods" && (<>
+              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 24px", lineHeight: 1.15 }}>What mood are you after?</h1>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {MOODS.map((m) => <Chip key={m.id} variant="mood" active={prefs.moods.includes(m.id)} onClick={() => toggleMood(m.id)}>{m.label}</Chip>)}
+              </div>
+            </>)}
+
+            {key === "pace" && (<>
+              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 8px", lineHeight: 1.15 }}>Slow-burn or fast-paced?</h1>
+              <p style={{ fontSize: 13, color: "#B5A896", margin: "0 0 20px", fontWeight: 600 }}>Pick one, both, or let us surprise you.</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {[{ id: "slow", l: "Slow-burn, atmospheric" }, { id: "fast", l: "Fast-paced" }, { id: "surprise", l: "🎲 Surprise me" }].map((o) => (
+                  <Chip key={o.id} active={prefs.pace.includes(o.id)} onClick={() => toggleSurprisable("pace", o.id)}>{o.l}</Chip>
+                ))}
+              </div>
+            </>)}
+
+            {key === "era" && (<>
+              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 8px", lineHeight: 1.15 }}>Any preferred era?</h1>
+              <p style={{ fontSize: 13, color: "#B5A896", margin: "0 0 20px", fontWeight: 600 }}>Pick one, mix a couple, or let us surprise you.</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {[{ id: "classic", l: "Classic (pre-2000)" }, { id: "2000s2010s", l: "2000s–2010s" }, { id: "recent", l: "Recent (2020+)" }, { id: "surprise", l: "🎲 Surprise me" }].map((o) => (
+                  <Chip key={o.id} active={prefs.era.includes(o.id)} onClick={() => toggleSurprisable("era", o.id)}>{o.l}</Chip>
+                ))}
+              </div>
+            </>)}
+
+            {key === "runtime" && (<>
+              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 8px", lineHeight: 1.15 }}>How much time do you have?</h1>
+              <p style={{ fontSize: 13, color: "#B5A896", margin: "0 0 20px", fontWeight: 600 }}>Applies to movies — pick one, mix, or surprise us.</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {[{ id: "short", l: "Quick (~90 min)" }, { id: "standard", l: "Standard length" }, { id: "long", l: "Long, immersive" }, { id: "surprise", l: "🎲 Surprise me" }].map((o) => (
+                  <Chip key={o.id} active={prefs.runtime.includes(o.id)} onClick={() => toggleSurprisable("runtime", o.id)}>{o.l}</Chip>
+                ))}
+              </div>
+            </>)}
+
+            {key === "ending" && (<>
+              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 8px", lineHeight: 1.15 }}>How should it end?</h1>
+              <p style={{ fontSize: 13, color: "#B5A896", margin: "0 0 20px", fontWeight: 600 }}>Helps us fine-tune future recommendations.</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {[{ id: "happy", l: "Happy ending, please" }, { id: "bittersweet", l: "Bittersweet is fine" }, { id: "open", l: "Open-ended" }, { id: "surprise", l: "🎲 Surprise me" }].map((o) => (
+                  <Chip key={o.id} active={prefs.ending.includes(o.id)} onClick={() => toggleSurprisable("ending", o.id)}>{o.l}</Chip>
+                ))}
+              </div>
+            </>)}
+
+            <div style={{ display: "flex", gap: 10, marginTop: 36 }}>
+              {step > 0 && <button className="nav-btn ghost" onClick={goBack}>Back</button>}
+              <button className="nav-btn primary" disabled={!canAdvance()} onClick={goNext}>
+                {step === STEPS.length - 1 ? "Show my picks →" : "Next"}
+              </button>
+            </div>
+          </>
+        )}
+
+        {loading && (
+          <div style={{ padding: "60px 0", textAlign: "center", color: "#B5A896", fontWeight: 700 }}>Finding your picks…</div>
+        )}
+
+        {error && (
+          <div style={{ padding: "20px 0" }}>
+            <p style={{ color: "#D9534F", fontWeight: 600, marginBottom: 16 }}>{error}</p>
+            <button className="nav-btn ghost" onClick={goBack}>Go back</button>
+          </div>
+        )}
+
+        {!loading && !error && view === "quiz" && showResults && (
+          <div>
+            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 20px" }}>Your picks 🍿</h1>
+            {results.map((m) => (
+              <div key={m.tmdbId} className="ticket">
+                <Poster posterPath={m.posterPath} title={m.title} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <span style={{ fontSize: 16, fontWeight: 800 }}>{m.title}</span>
+                    <button className={`small-btn ${isInWatchlist(m.tmdbId) ? "added" : ""}`} onClick={() => isInWatchlist(m.tmdbId) ? removeFromWatchlist(m.tmdbId) : addToWatchlist(m)}>
+                      {isInWatchlist(m.tmdbId) ? "✓ Added" : "+ My List"}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
+                    {m.type} · {m.year} · {m.genres.join(", ") || "—"}
+                  </div>
+                  <RatingBadges rating={m.tmdbVote ? Math.round(m.tmdbVote * 10) / 10 : null} />
+                  <SpoilerSafeOverview overview={m.overview} releaseDate={m.releaseDate} />
+                  <WatchProviders tmdbId={m.tmdbId} type={m.type} />
+                  <button onClick={() => openSimilar(m)} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, marginTop: 10, cursor: "pointer" }}>
+                    {similarOpenFor === m.tmdbId ? "Hide similar ▲" : "Similar titles ▼"}
+                  </button>
+                  {similarOpenFor === m.tmdbId && (
+                    <div style={{ marginTop: 10 }}>
+                      {!similarItems[m.tmdbId] && <p style={{ fontSize: 12, color: "#B5A896" }}>Loading…</p>}
+                      {(similarItems[m.tmdbId] || []).map((s) => (
+                        <MiniCard key={s.tmdbId} m={s} isAdded={isInWatchlist(s.tmdbId)} onAdd={() => addToWatchlist(s)} />
+                      ))}
+                    </div>
+                  )}
+                  <CommentsSection tmdbId={m.tmdbId} type={m.type} />
+                </div>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+              <button className="nav-btn ghost" onClick={goBack}>Adjust answers</button>
+              <button className="nav-btn primary" onClick={restart}>Start over</button>
+            </div>
+          </div>
+        )}
+
+        {view === "search" && (
+          <div>
+            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 16px" }}>Search titles</h1>
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Type a movie or series title…"
+              className="field"
+            />
+            {searching && <p style={{ color: "#B5A896", fontWeight: 600 }}>Searching…</p>}
+            {!searching && searchQuery.trim() && searchResults.length === 0 && (
+              <p style={{ color: "#B5A896", fontWeight: 600 }}>No titles match "{searchQuery}".</p>
+            )}
+            {searchQuery.trim() && searchResults.map((m) => (
+              <MiniCard key={m.tmdbId} m={m} isAdded={isInWatchlist(m.tmdbId)} onAdd={() => addToWatchlist(m)} />
+            ))}
+            {!searchQuery.trim() && (
+              <>
+                <div style={{ fontSize: 12, color: "#B5A896", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
+                  🔥 Trending this week
+                </div>
+                {!trendingLoaded && <p style={{ color: "#B5A896", fontWeight: 600 }}>Loading…</p>}
+                {trending.map((m) => (
+                  <MiniCard key={m.tmdbId} m={m} isAdded={isInWatchlist(m.tmdbId)} onAdd={() => addToWatchlist(m)} />
+                ))}
+              </>
+            )}
+          </div>
+        )}
+
+        {view === "watchlist" && (
+          <div>
+            <OnThisDayBanner items={onThisDayItems} />
+            {notifSupported && (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FFFFFF", borderRadius: 14, padding: "12px 14px", marginBottom: 16, boxShadow: "0 3px 14px rgba(46,42,51,0.06)" }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#6B6472" }}>🔔 Daily reminder for tonight's pick</span>
+                <button className={`small-btn ${notifOn ? "added" : ""}`} onClick={toggleNotifications}>{notifOn ? "On" : "Off"}</button>
+              </div>
+            )}
+            <GroupPick watchlist={watchlist} isInWatchlist={isInWatchlist} addToWatchlist={addToWatchlist} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h1 style={{ fontSize: 26, fontWeight: 800, margin: 0 }}>My List</h1>
+              {watchlist.length > 1 && (
+                <select value={watchlistSort} onChange={(e) => setWatchlistSort(e.target.value)} style={{ border: "1.5px solid #EAD9C8", borderRadius: 10, padding: "6px 10px", fontSize: 12, fontWeight: 700, color: "#6B6472", background: "#FFFFFF" }}>
+                  <option value="added">Recently added</option>
+                  <option value="rating">My rating</option>
+                  <option value="year">Year</option>
+                  <option value="title">Title A–Z</option>
+                </select>
+              )}
+            </div>
+            {!watchlistLoaded && <p style={{ color: "#B5A896", fontWeight: 600 }}>Loading…</p>}
+            {watchlistLoaded && watchlist.length === 0 && (
+              <p style={{ color: "#B5A896", fontWeight: 600, lineHeight: 1.6 }}>
+                Nothing here yet. Go to "Discover" or "Search" and tap "+ My List" to save titles here.
+              </p>
+            )}
+            {watchlistLoaded && watchlist.some((w) => !w.watched) && (
+              <button
+                className="nav-btn primary"
+                style={{ width: "100%", marginBottom: 16 }}
+                disabled={roulette.spinning}
+                onClick={spinRoulette}
+              >
+                {roulette.spinning ? "🎲 Spinning…" : "🎲 Pick one for me"}
+              </button>
+            )}
+            {roulette.pick && (
+              <div className="ticket" style={{ border: "2px solid #FF6B4A", marginBottom: 20 }}>
+                <Poster posterPath={roulette.pick.posterPath} title={roulette.pick.title} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: "#FF6B4A", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+                    {roulette.spinning ? "Spinning…" : "🎬 Tonight's pick"}
+                  </div>
+                  <span style={{ fontSize: 17, fontWeight: 800 }}>{roulette.pick.title}</span>
+                  <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
+                    {roulette.pick.type} · {roulette.pick.year}
+                  </div>
+                  {!roulette.spinning && (
+                    <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                      <button className="small-btn" onClick={spinRoulette}>🎲 Spin again</button>
+                      <button className="small-btn" onClick={() => setRoulette({ spinning: false, pick: null })}>Dismiss</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            {sortedWatchlist.map((m) => (
+              <div key={m.tmdbId} className="ticket" style={{ opacity: m.watched ? 0.6 : 1 }}>
+                <Poster posterPath={m.posterPath} title={m.title} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <span style={{ fontSize: 16, fontWeight: 800 }}>{m.title}{m.watched ? " ✓" : ""}</span>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className="small-btn" onClick={() => toggleWatched(m.tmdbId)}>{m.watched ? "Unwatch" : "Watched"}</button>
+                      <button className="small-btn remove" onClick={() => removeFromWatchlist(m.tmdbId)}>Remove</button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>
+                    {m.type} · {m.year} · {(m.genres || []).join(", ") || "—"}
+                  </div>
+                  <RatingBadges rating={m.tmdbVote ? Math.round(m.tmdbVote * 10) / 10 : null} />
+                  <WatchProviders tmdbId={m.tmdbId} type={m.type} />
+                  <OverallRating value={m.myRating || 0} onChange={(v) => setMyRating(m.tmdbId, v)} />
+                  <CommentsSection tmdbId={m.tmdbId} type={m.type} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <AboutSection />
+      </div>
+    </div>
+  );
+}
