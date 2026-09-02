@@ -478,20 +478,53 @@ function Chip({ active, onClick, children, variant }) {
   );
 }
 
-function CommentItem({ c }) {
+const REPORTED_KEY = "scenepick_reported_v1";
+
+function CommentItem({ c, onReport }) {
   const [revealed, setRevealed] = useState(false);
+  const [reported, setReported] = useState(() => {
+    try {
+      const list = JSON.parse(localStorage.getItem(REPORTED_KEY) || "[]");
+      return list.includes(c.id);
+    } catch (e) {
+      return false;
+    }
+  });
+
+  const handleReport = async () => {
+    if (reported) return;
+    setReported(true);
+    try {
+      const list = JSON.parse(localStorage.getItem(REPORTED_KEY) || "[]");
+      localStorage.setItem(REPORTED_KEY, JSON.stringify([...list, c.id]));
+    } catch (e) {
+      // non-fatal — worst case the report can be sent again
+    }
+    onReport(c);
+  };
+
   return (
     <div style={{ padding: "10px 0", borderBottom: "1px solid #F1E6DA" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
         <span style={{ fontSize: 12, fontWeight: 800, color: "#2E2A33" }}>{c.nickname || "Anonymous"}</span>
-        {c.spoiler && !revealed && (
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {c.spoiler && !revealed && (
+            <button
+              onClick={() => setRevealed(true)}
+              style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+            >
+              ⚠️ Show spoiler
+            </button>
+          )}
           <button
-            onClick={() => setRevealed(true)}
-            style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+            onClick={handleReport}
+            disabled={reported}
+            title="Report this comment"
+            style={{ border: "none", background: "transparent", color: reported ? "#D9C4B0" : "#B5A896", fontWeight: 700, fontSize: 11, cursor: reported ? "default" : "pointer" }}
           >
-            ⚠️ Show spoiler
+            {reported ? "Reported ✓" : "🚩 Report"}
           </button>
-        )}
+        </div>
       </div>
       <div style={{ fontSize: 13, color: "#6B6472", lineHeight: 1.5, filter: c.spoiler && !revealed ? "blur(5px)" : "none", userSelect: c.spoiler && !revealed ? "none" : "auto" }}>
         {c.text}
@@ -553,6 +586,21 @@ function CommentsSection({ tmdbId, type }) {
     }
   };
 
+  const reportComment = async (c) => {
+    try {
+      await addDoc(collection(db, "reports"), {
+        commentId: c.id,
+        tmdbId, type,
+        commentText: (c.text || "").slice(0, 500),
+        commentNickname: c.nickname || "Anonymous",
+        reporterUid: getUid(),
+        createdAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.error("Failed to send report", e);
+    }
+  };
+
   return (
     <div style={{ marginTop: 10 }}>
       <button onClick={toggleOpen} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, cursor: "pointer" }}>
@@ -586,7 +634,7 @@ function CommentsSection({ tmdbId, type }) {
           </div>
           {loading && <p style={{ fontSize: 12, color: "#B5A896" }}>Loading comments…</p>}
           {!loading && comments.length === 0 && <p style={{ fontSize: 12, color: "#B5A896" }}>No comments yet — be the first.</p>}
-          {comments.map((c) => <CommentItem key={c.id} c={c} />)}
+          {comments.map((c) => <CommentItem key={c.id} c={c} onReport={reportComment} />)}
         </div>
       )}
     </div>

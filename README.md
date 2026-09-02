@@ -18,17 +18,18 @@ npm run dev      # runs the app locally at http://localhost:5173
 npm run build    # builds a production-ready version into /dist
 ```
 
-Status
+## Status
 
-* UI and preference logic: done, tested
-* TMDB integration (posters, ratings, watch providers, similar titles): live and wired in
-* Android build pipeline (Capacitor + GitHub Actions signed release build): set up and working
-* Next planned step: add an in-app "report" option for comments (needed before Google Play submission), then submit to Google Play
+- UI and preference logic: done, tested with sample data
+- Live TMDB (movies/posters) + OMDb (IMDb/Rotten Tomatoes) integration: written and ready in an
+  earlier version, to be wired back in once this project is deployed somewhere with normal
+  internet access (not needed for local demo)
+- Next planned step: package this as an Android app and get it onto Google Play
 
 ## New features (from the market analysis)
 
-- `src/lib/tmdbExtra.js` — watch providers ("📺 Where to watch"), season/episode details, and
-  the popular-movies pool used by the taste bootstrap.
+- `src/lib/tmdbExtra.js` — watch providers ("📺 Where to watch") and the popular-movies pool used
+  by the taste bootstrap.
 - `src/lib/localData.js` — daily-open streak, and the genre-weight profile from "🎯 Rate a few
   movies" (feeds into `rerankScore` in `App.jsx` as a small ranking nudge).
 - `src/lib/notifications.js` — daily local reminder via `@capacitor/local-notifications`. No-op
@@ -36,25 +37,31 @@ Status
   the "My List" tab and only appears once the app detects it's running natively.
 - `src/lib/group.js` — "👥 Pick together": create/join a short room code, each person's unwatched
   list syncs to Firestore (`groups/{code}`), and the app shows titles both people already saved
-  (falling back to the combined pool if there's no overlap yet).
-- Episode-level tracking (season/episode counter per series, using TMDB's season endpoint to
-  roll over automatically) and spoiler-safe synopses (blurred for titles that premiered in the
-  last 3 weeks) both live directly in `App.jsx`.
+  (falling back to the combined pool if there's no overlap yet). Collapsed by default — tap
+  "Open ▼" to expand.
+- Spoiler-safe synopses (blurred for titles that premiered in the last 3 weeks), directly in
+  `App.jsx`.
+- "🚩 Report" button on every comment, required for Google Play's user-generated-content policy.
+  Writes to a new `reports` Firestore collection (title/text/time only — reports themselves are
+  never shown to other users). See the Firestore rules note below.
 
 ### One manual step: Firestore rules
 
 The existing `comments` collection is presumably already allowed by your Firestore security
-rules. The new `groups` collection needs the same kind of open read/write rule added in the
-Firebase console (Firestore → Rules) — something like:
+rules. Two newer collections need rules added in the Firebase console (Firestore → Rules):
 
 ```
 match /groups/{code} {
   allow read, write: if request.auth != null;
 }
+match /reports/{reportId} {
+  allow create: if request.auth != null;
+  allow read, update, delete: if false; // only visible/manageable from the Firebase console
+}
 ```
 
-Without this, "Pick together" will fail with a permissions error even though the code itself is
-correct — Firestore rules live server-side, not in this repo.
+Without this, "Pick together" and the comment "🚩 Report" button will fail with a permissions
+error even though the code itself is correct — Firestore rules live server-side, not in this repo.
 
 ### Android build
 
