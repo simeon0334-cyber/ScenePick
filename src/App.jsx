@@ -1,6 +1,10 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { db, getUid } from "./firebase";
 import { collection, query, where, orderBy, limit, getDocs, addDoc, serverTimestamp } from "firebase/firestore";
+import { fetchWatchProviders, PROVIDER_LOGO_BASE, fetchSeasonDetails, fetchTasteCandidates } from "./lib/tmdbExtra";
+import { bumpStreak, getTasteProfile, recordTasteRating, getNotifPref, setNotifPref } from "./lib/localData";
+import { isNotificationSupported, requestNotificationPermission, scheduleDailyReminder, cancelDailyReminder } from "./lib/notifications";
+import { createGroup, joinGroup, updateMyGroupList, subscribeGroup, computeGroupMatches } from "./lib/group";
 
 const GENRES = [
   "Action", "Comedy", "Drama", "Thriller", "Horror",
@@ -40,6 +44,16 @@ const PACE_GENRE_BOOST = {
 const STEPS = ["type", "genres", "moods", "pace", "era", "runtime", "ending"];
 const WATCHLIST_KEY = "scenepick_watchlist_v3";
 const POSTER_BASE = "https://image.tmdb.org/t/p/w342";
+const GROUP_CODE_KEY = "scenepick_group_code_v1";
+const RECENT_PREMIERE_DAYS = 21; // titles that premiered this recently get their synopsis blurred by default
+
+function isRecentPremiere(releaseDate) {
+  if (!releaseDate) return false;
+  const d = new Date(releaseDate);
+  if (isNaN(d.getTime())) return false;
+  const days = (Date.now() - d.getTime()) / 86400000;
+  return days >= 0 && days <= RECENT_PREMIERE_DAYS;
+}
 
 const TMDB_KEY = (import.meta.env.VITE_TMDB_API_KEY || "").trim();
 
@@ -61,11 +75,13 @@ function singleSelected(arr) {
 }
 
 function mapResult(r, kind) {
+  const releaseDate = (kind === "movie" ? r.release_date : r.first_air_date) || "";
   return {
     tmdbId: r.id,
     type: kind === "movie" ? "Movie" : "Series",
     title: kind === "movie" ? r.title : r.name,
-    year: (kind === "movie" ? r.release_date : r.first_air_date || "").slice(0, 4) || "—",
+    year: releaseDate.slice(0, 4) || "—",
+    releaseDate,
     genres: (r.genre_ids || []).map((id) => ALL_GENRE_NAMES[id]).filter(Boolean),
     overview: r.overview || "No description available.",
     posterPath: r.poster_path,
@@ -76,42 +92,43 @@ function mapResult(r, kind) {
 async function fetchDiscover({ tmdbKey, kind, prefs, keywordIds }) {
   const genreMap = kind === "movie" ? MOVIE_GENRE_IDS : TV_GENRE_IDS;
   const ids = prefs.genres.map((g) => genreMap[g]).filter(Boolean);
-  const buildParams = (page) => {
+
+  const buildParams = (page, { withKeywords } = {}) => {
     const params = new URLSearchParams({
       api_key: tmdbKey,
-      sort_by: "vote_average.desc",
-      "vote_count.gte": kind === "movie" ? "150" : "20",
+      sort_by: "popularity.desc", // surfaces well-known titles, not just obscure high-rated ones
+      "vote_count.gte": kind === "movie" ? "50" : "10",
       language: "en-US",
       page: String(page),
     });
     if (ids.length > 0) params.set("with_genres", ids.join("|"));
-    if (keywordIds && keywordIds.length > 0) params.set("with_keywords", keywordIds.join("|"));
-
-    const era = singleSelected(prefs.era);
-    if (era) {
-      const range = eraDateRange(era);
-      const field = kind === "movie" ? "primary_release_date" : "first_air_date";
-      if (range.gte) params.set(`${field}.gte`, range.gte);
-      if (range.lte) params.set(`${field}.lte`, range.lte);
-    }
-    if (kind === "movie") {
-      const rtPref = singleSelected(prefs.runtime);
-      if (rtPref) {
-        const range = runtimeRange(rtPref);
-        if (range.gte) params.set("with_runtime.gte", String(range.gte));
-        if (range.lte) params.set("with_runtime.lte", String(range.lte));
-      }
-    }
+    if (withKeywords && keywordIds && keywordIds.length > 0) params.set("with_keywords", keywordIds.join("|"));
     return params;
   };
 
-  const pages = await Promise.all([1, 2].map(async (page) => {
-    const res = await fetch(`https://api.themoviedb.org/3/discover/${kind}?${buildParams(page).toString()}`);
+  const fetchPage = async (page, opts) => {
+    const res = await fetch(`https://api.themoviedb.org/3/discover/${kind}?${buildParams(page, opts).toString()}`);
     if (!res.ok) throw new Error(`TMDB ${kind} discover failed (${res.status}). Check your TMDB API key.`);
     const data = await res.json();
     return (data.results || []).map((r) => mapResult(r, kind));
-  }));
-  return pages.flat();
+  };
+
+  // Broad pool: genre-filtered only, several pages, guarantees plenty of results.
+  const broadPages = await Promise.all([1, 2, 3].map((p) => fetchPage(p)));
+  const broad = broadPages.flat();
+
+  // Bonus pool: same genre filter + keyword match (mood/pace/ending/genre-fallback), used to boost ranking, not to restrict.
+  let bonusIds = new Set();
+  if (keywordIds && keywordIds.length > 0) {
+    try {
+      const bonusPages = await Promise.all([1, 2].map((p) => fetchPage(p, { withKeywords: true })));
+      bonusPages.flat().forEach((item) => bonusIds.add(`${item.type}-${item.tmdbId}`));
+    } catch (e) {
+      // keyword-boost query failing shouldn't break the whole search
+    }
+  }
+
+  return broad.map((item) => ({ ...item, keywordMatch: bonusIds.has(`${item.type}-${item.tmdbId}`) }));
 }
 
 const keywordIdCache = {};
@@ -197,16 +214,33 @@ async function fetchTrending({ tmdbKey }) {
     .map((r) => mapResult(r, r.media_type));
 }
 
-function rerankScore(item, prefs) {
+function rerankScore(item, prefs, tasteWeights) {
   let bonus = 0;
   prefs.moods.forEach((m) => {
-    if (MOOD_GENRE_BOOST[m] && item.genres.some((g) => MOOD_GENRE_BOOST[m].includes(g))) bonus += 2;
-    if (m === "binge" && item.type === "Series") bonus += 2;
+    if (MOOD_GENRE_BOOST[m] && item.genres.some((g) => MOOD_GENRE_BOOST[m].includes(g))) bonus += 3;
+    if (m === "binge" && item.type === "Series") bonus += 3;
   });
   prefs.pace.forEach((p) => {
-    if (PACE_GENRE_BOOST[p] && item.genres.some((g) => PACE_GENRE_BOOST[p].includes(g))) bonus += 2;
+    if (PACE_GENRE_BOOST[p] && item.genres.some((g) => PACE_GENRE_BOOST[p].includes(g))) bonus += 3;
   });
-  return bonus + item.tmdbVote;
+  const era = singleSelected(prefs.era);
+  if (era) {
+    const year = parseInt(item.year, 10);
+    if (!isNaN(year)) {
+      if (era === "classic" && year < 2000) bonus += 4;
+      if (era === "2000s2010s" && year >= 2000 && year <= 2019) bonus += 4;
+      if (era === "recent" && year >= 2020) bonus += 4;
+    }
+  }
+  if (item.keywordMatch) bonus += 6;
+  // Genre weights learned from the "rate a few movies" taste bootstrap — small nudge, capped
+  // so a couple of enthusiastic likes can't completely dominate the chip-based preferences.
+  if (tasteWeights) {
+    const tasteBonus = item.genres.reduce((sum, g) => sum + (tasteWeights[g] || 0), 0);
+    bonus += Math.max(-4, Math.min(4, tasteBonus * 0.8));
+  }
+  // popularity is already the primary sort signal from the API; use it as a light tiebreaker
+  return bonus + Math.min(item.tmdbVote || 0, 10) * 0.3;
 }
 
 
@@ -245,6 +279,226 @@ function RatingBadges({ rating }) {
         <span style={{ background: "#01B4E4", color: "#FFFFFF", fontWeight: 800, padding: "1px 5px", borderRadius: 4, fontSize: 10 }}>TMDB</span>
         <span style={{ color: "#6B6472", fontWeight: 600 }}>{rating != null ? rating : "—"}</span>
       </div>
+    </div>
+  );
+}
+
+function ProviderLogo({ item }) {
+  return (
+    <img
+      src={`${PROVIDER_LOGO_BASE}${item.logo_path}`}
+      alt={item.provider_name}
+      title={item.provider_name}
+      style={{ width: 34, height: 34, borderRadius: 8, flexShrink: 0 }}
+    />
+  );
+}
+
+function WatchProviders({ tmdbId, type }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState(undefined); // undefined = not fetched, null = fetched but empty
+
+  const toggle = async () => {
+    const next = !open;
+    setOpen(next);
+    if (next && data === undefined) {
+      setLoading(true);
+      const result = await fetchWatchProviders({ tmdbKey: TMDB_KEY, tmdbId, kind: type });
+      setData(result);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button onClick={toggle} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, cursor: "pointer" }}>
+        {open ? "Hide where to watch ▲" : "📺 Where to watch ▼"}
+      </button>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          {loading && <p style={{ fontSize: 12, color: "#B5A896" }}>Checking streaming availability…</p>}
+          {!loading && !data && <p style={{ fontSize: 12, color: "#B5A896" }}>No streaming info found for your region yet.</p>}
+          {!loading && data && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {data.flatrate && data.flatrate.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>Stream</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {data.flatrate.map((p) => <ProviderLogo key={p.provider_id} item={p} />)}
+                  </div>
+                </div>
+              )}
+              {data.rent && data.rent.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>Rent</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {data.rent.map((p) => <ProviderLogo key={p.provider_id} item={p} />)}
+                  </div>
+                </div>
+              )}
+              {data.buy && data.buy.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}>Buy</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {data.buy.map((p) => <ProviderLogo key={p.provider_id} item={p} />)}
+                  </div>
+                </div>
+              )}
+              {!data.flatrate && !data.rent && !data.buy && (
+                <p style={{ fontSize: 12, color: "#B5A896" }}>No streaming, rental, or purchase options found for your region.</p>
+              )}
+              <div style={{ fontSize: 10, color: "#D9C4B0", fontWeight: 600 }}>Streaming data provided by JustWatch, via TMDB.</div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SpoilerSafeOverview({ overview, releaseDate }) {
+  const [revealed, setRevealed] = useState(false);
+  const guarded = isRecentPremiere(releaseDate) && !revealed;
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{
+        fontSize: 13, lineHeight: 1.5, color: "#6B6472",
+        filter: guarded ? "blur(5px)" : "none", userSelect: guarded ? "none" : "auto",
+      }}>
+        {overview}
+      </div>
+      {guarded && (
+        <button
+          onClick={() => setRevealed(true)}
+          style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 11, padding: 0, marginTop: 4, cursor: "pointer" }}
+        >
+          ⚠️ Recently released — show synopsis anyway
+        </button>
+      )}
+    </div>
+  );
+}
+
+function EpisodeTracker({ item, onUpdate }) {
+  const [loadingNext, setLoadingNext] = useState(false);
+  const progress = item.progress || { season: 1, episode: 0 };
+
+  const markNextWatched = async () => {
+    setLoadingNext(true);
+    try {
+      const season = await fetchSeasonDetails({ tmdbKey: TMDB_KEY, tmdbId: item.tmdbId, seasonNumber: progress.season });
+      const episodeCount = season ? season.episodeCount : null;
+      let next = { season: progress.season, episode: progress.episode + 1 };
+      if (episodeCount && next.episode > episodeCount) {
+        next = { season: progress.season + 1, episode: 1 };
+      }
+      onUpdate(next);
+    } finally {
+      setLoadingNext(false);
+    }
+  };
+
+  const adjustSeason = (delta) => {
+    const season = Math.max(1, progress.season + delta);
+    onUpdate({ season, episode: 0 });
+  };
+
+  return (
+    <div style={{ marginTop: 10, background: "#FFF9F3", borderRadius: 10, padding: "8px 12px" }}>
+      <div style={{ fontSize: 10, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+        Episode progress
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, fontWeight: 800, color: "#2E2A33" }}>
+          {progress.episode > 0 ? `Season ${progress.season} · Episode ${progress.episode}` : `Ready to start Season ${progress.season}`}
+        </span>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="small-btn" onClick={() => adjustSeason(-1)} disabled={progress.season <= 1}>Prev season</button>
+          <button className="small-btn" onClick={() => adjustSeason(1)}>Next season</button>
+          <button className="small-btn added" disabled={loadingNext} onClick={markNextWatched}>
+            {loadingNext ? "…" : "+ Watched episode"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StreakBadge({ count }) {
+  if (!count || count < 2) return null;
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 800,
+      color: "#FF6B4A", background: "#FFF0EA", padding: "5px 10px", borderRadius: 12,
+    }}>
+      🔥 {count}-day streak
+    </div>
+  );
+}
+
+function OnThisDayBanner({ items }) {
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed || items.length === 0) return null;
+  return (
+    <div style={{ background: "#FFF0EA", border: "1.5px solid #FFD9CB", borderRadius: 14, padding: "12px 14px", marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#6B6472", lineHeight: 1.5 }}>
+          📅 On this day, you watched <strong>{items.map((i) => i.title).join(", ")}</strong> — still feeling it?
+        </div>
+        <button onClick={() => setDismissed(true)} style={{ border: "none", background: "transparent", color: "#B5A896", fontWeight: 800, cursor: "pointer", fontSize: 14, lineHeight: 1 }}>×</button>
+      </div>
+    </div>
+  );
+}
+
+function TasteCheck({ onClose, onApplied }) {
+  const [candidates, setCandidates] = useState(null);
+  const [index, setIndex] = useState(0);
+  const [ratedCount, setRatedCount] = useState(0);
+
+  useEffect(() => {
+    (async () => {
+      const list = await fetchTasteCandidates({ tmdbKey: TMDB_KEY, count: 8 });
+      setCandidates(list);
+    })();
+  }, []);
+
+  const rate = (liked) => {
+    const item = candidates[index];
+    const genreNames = (item.genreIds || []).map((id) => ALL_GENRE_NAMES[id]).filter(Boolean);
+    recordTasteRating({ tmdbId: item.tmdbId, genreNames, liked });
+    setRatedCount((c) => c + 1);
+    if (index + 1 >= candidates.length) { onApplied(); onClose(); }
+    else setIndex(index + 1);
+  };
+  const skip = () => {
+    if (index + 1 >= candidates.length) { onApplied(); onClose(); }
+    else setIndex(index + 1);
+  };
+
+  return (
+    <div style={{ background: "#FFFFFF", borderRadius: 16, padding: 20, marginBottom: 20, boxShadow: "0 3px 14px rgba(46,42,51,0.06)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <span style={{ fontSize: 13, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em" }}>🎯 Quick taste check</span>
+        <button onClick={onClose} style={{ border: "none", background: "transparent", color: "#B5A896", fontWeight: 800, cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+      </div>
+      {!candidates && <p style={{ color: "#B5A896", fontWeight: 600, fontSize: 13 }}>Loading a few movies…</p>}
+      {candidates && candidates.length === 0 && <p style={{ color: "#B5A896", fontWeight: 600, fontSize: 13 }}>Couldn't load titles right now — try again later.</p>}
+      {candidates && candidates[index] && (
+        <div style={{ display: "flex", gap: 14 }}>
+          <Poster posterPath={candidates[index].posterPath} title={candidates[index].title} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 800 }}>{candidates[index].title}</div>
+            <div style={{ fontSize: 11, color: "#B5A896", fontWeight: 600, marginTop: 2, marginBottom: 10 }}>{candidates[index].year} · {index + 1} of {candidates.length}</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="small-btn added" onClick={() => rate(true)}>👍 Loved it</button>
+              <button className="small-btn remove" onClick={() => rate(false)}>👎 Not for me</button>
+              <button className="small-btn" onClick={skip}>Haven't seen it</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -456,6 +710,142 @@ function AboutSection() {
   );
 }
 
+function GroupPick({ watchlist, isInWatchlist, addToWatchlist }) {
+  const [code, setCode] = useState(() => { try { return localStorage.getItem(GROUP_CODE_KEY) || ""; } catch (e) { return ""; } });
+  const [joinInput, setJoinInput] = useState("");
+  const [nickname, setNickname] = useState(() => localStorage.getItem("scenepick_nickname") || "");
+  const [groupData, setGroupData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [pick, setPick] = useState(null);
+  const unsubRef = useRef(null);
+
+  const unwatched = watchlist.filter((w) => !w.watched);
+
+  useEffect(() => {
+    if (!code) return;
+    if (unsubRef.current) unsubRef.current();
+    unsubRef.current = subscribeGroup(code, setGroupData);
+    return () => { if (unsubRef.current) unsubRef.current(); };
+  }, [code]);
+
+  // Keep the shared list current as the local watchlist changes (marking things watched, etc).
+  useEffect(() => {
+    if (!code) return;
+    updateMyGroupList({ code, list: unwatched });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, watchlist.length, watchlist.map((w) => `${w.tmdbId}-${w.watched}`).join(",")]);
+
+  const persistCode = (c) => {
+    setCode(c);
+    localStorage.setItem(GROUP_CODE_KEY, c);
+  };
+
+  const handleCreate = async () => {
+    setBusy(true); setErrorMsg(null);
+    try {
+      const newCode = await createGroup({ nickname: nickname.trim() || "You", list: unwatched });
+      localStorage.setItem("scenepick_nickname", nickname.trim() || "You");
+      persistCode(newCode);
+    } catch (e) {
+      setErrorMsg(e.message || "Couldn't create a room.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleJoin = async () => {
+    if (!joinInput.trim()) return;
+    setBusy(true); setErrorMsg(null);
+    try {
+      const joined = await joinGroup({ code: joinInput, nickname: nickname.trim() || "You", list: unwatched });
+      localStorage.setItem("scenepick_nickname", nickname.trim() || "You");
+      persistCode(joined);
+    } catch (e) {
+      setErrorMsg(e.message || "Couldn't join that room.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const leaveRoom = () => {
+    persistCode("");
+    setGroupData(null);
+    setPick(null);
+  };
+
+  const { matches, isOverlap } = groupData ? computeGroupMatches(groupData.members) : { matches: [], isOverlap: false };
+
+  const spin = () => {
+    if (matches.length === 0) return;
+    setPick(matches[Math.floor(Math.random() * matches.length)]);
+  };
+
+  const memberCount = groupData ? Object.keys(groupData.members || {}).length : 0;
+
+  return (
+    <div style={{ background: "#FFFFFF", borderRadius: 16, padding: 20, marginBottom: 20, boxShadow: "0 3px 14px rgba(46,42,51,0.06)" }}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 14 }}>
+        👥 Pick together
+      </div>
+
+      {!code && (
+        <div>
+          <p style={{ fontSize: 13, color: "#6B6472", lineHeight: 1.6, margin: "0 0 14px" }}>
+            Share a room with someone else and we'll find something you both already saved.
+          </p>
+          <input value={nickname} onChange={(e) => setNickname(e.target.value)} placeholder="Your name" className="field" />
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+            <button className="nav-btn primary" disabled={busy} onClick={handleCreate}>Start a room</button>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input value={joinInput} onChange={(e) => setJoinInput(e.target.value.toUpperCase())} placeholder="Enter a room code" className="field" style={{ marginBottom: 0, flex: 1, minWidth: 140 }} />
+            <button className="nav-btn ghost" disabled={busy} onClick={handleJoin}>Join</button>
+          </div>
+          {errorMsg && <p style={{ color: "#D9534F", fontSize: 12, fontWeight: 600, marginTop: 10 }}>{errorMsg}</p>}
+        </div>
+      )}
+
+      {code && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "0.08em" }}>{code}</div>
+              <div style={{ fontSize: 12, color: "#B5A896", fontWeight: 600 }}>{memberCount} {memberCount === 1 ? "person" : "people"} in this room — share the code to invite more</div>
+            </div>
+            <button className="small-btn remove" onClick={leaveRoom}>Leave</button>
+          </div>
+
+          {memberCount < 2 && <p style={{ fontSize: 13, color: "#B5A896", fontWeight: 600 }}>Waiting for someone to join with this code…</p>}
+
+          {memberCount >= 2 && (
+            <>
+              <p style={{ fontSize: 12, color: "#B5A896", fontWeight: 600, marginBottom: 10 }}>
+                {isOverlap ? "✨ Everyone already has these saved:" : "No exact overlap yet — here's everything the room has saved:"}
+              </p>
+              <button className="nav-btn primary" style={{ width: "100%", marginBottom: 12 }} disabled={matches.length === 0} onClick={spin}>
+                🎲 Pick for us
+              </button>
+              {pick && (
+                <div className="ticket" style={{ border: "2px solid #FF6B4A" }}>
+                  <Poster posterPath={pick.posterPath} title={pick.title} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ fontSize: 16, fontWeight: 800 }}>{pick.title}</span>
+                    <div style={{ fontSize: 12, color: "#B5A896", marginTop: 4, fontWeight: 600 }}>{pick.type} · {pick.year}</div>
+                    {!isInWatchlist(pick.tmdbId) && (
+                      <button className="small-btn" style={{ marginTop: 8 }} onClick={() => addToWatchlist(pick)}>+ My List</button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState("quiz");
   const [step, setStep] = useState(0);
@@ -482,6 +872,12 @@ export default function App() {
     type: "either", genres: [], moods: [], pace: [], era: [], runtime: [], ending: [],
   });
 
+  const [streak, setStreak] = useState(() => ({ count: 0 }));
+  const [tasteProfile, setTasteProfile] = useState(() => getTasteProfile());
+  const [tasteCheckOpen, setTasteCheckOpen] = useState(false);
+  const [notifOn, setNotifOn] = useState(() => getNotifPref());
+  const [notifSupported, setNotifSupported] = useState(false);
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(WATCHLIST_KEY);
@@ -491,7 +887,21 @@ export default function App() {
     } finally {
       setWatchlistLoaded(true);
     }
+    setStreak(bumpStreak());
+    isNotificationSupported().then(setNotifSupported);
   }, []);
+
+  const toggleNotifications = async () => {
+    if (!notifOn) {
+      const permission = await requestNotificationPermission();
+      if (permission !== "granted") { setNotifPref(false); setNotifOn(false); return; }
+      await scheduleDailyReminder(watchlist.filter((w) => !w.watched).length);
+      setNotifPref(true); setNotifOn(true);
+    } else {
+      await cancelDailyReminder();
+      setNotifPref(false); setNotifOn(false);
+    }
+  };
 
   const saveWatchlist = (next) => {
     setWatchlist(next);
@@ -504,7 +914,23 @@ export default function App() {
   };
   const removeFromWatchlist = (id) => saveWatchlist(watchlist.filter((w) => w.tmdbId !== id));
   const setMyRating = (id, rating) => saveWatchlist(watchlist.map((w) => (w.tmdbId === id ? { ...w, myRating: rating } : w)));
-  const toggleWatched = (id) => saveWatchlist(watchlist.map((w) => (w.tmdbId === id ? { ...w, watched: !w.watched } : w)));
+  const toggleWatched = (id) => saveWatchlist(watchlist.map((w) => (
+    w.tmdbId === id ? { ...w, watched: !w.watched, watchedAt: !w.watched ? Date.now() : null } : w
+  )));
+  const updateEpisodeProgress = (id, progress) => saveWatchlist(watchlist.map((w) => (w.tmdbId === id ? { ...w, progress } : w)));
+
+  // "On this day" — anything marked watched on this month/day in a previous year (±2 days).
+  const onThisDayItems = useMemo(() => {
+    const today = new Date();
+    return watchlist.filter((w) => {
+      if (!w.watchedAt) return false;
+      const d = new Date(w.watchedAt);
+      if (d.getFullYear() >= today.getFullYear()) return false;
+      const thisYear = new Date(today.getFullYear(), d.getMonth(), d.getDate());
+      const diffDays = Math.abs((today - thisYear) / 86400000);
+      return diffDays <= 2;
+    });
+  }, [watchlist]);
 
   const spinRoulette = () => {
     const eligible = watchlist.filter((w) => !w.watched);
@@ -607,9 +1033,9 @@ export default function App() {
         seen.add(key);
         return true;
       });
-      let candidates = deduped.map((c) => ({ ...c, rank: rerankScore(c, prefs) }));
+      let candidates = deduped.map((c) => ({ ...c, rank: rerankScore(c, prefs, tasteProfile.genreWeights) }));
       candidates.sort((a, b) => b.rank - a.rank);
-      setResults(candidates.slice(0, 15));
+      setResults(candidates.slice(0, 24));
       setShowResults(true);
     } catch (e) {
       setError(e.message || "Something went wrong while fetching picks. Check your API keys and try again.");
@@ -681,9 +1107,12 @@ export default function App() {
 
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "26px 20px 80px" }}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 28, gap: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 19, letterSpacing: "0.01em", color: "#2E2A33", fontWeight: 800 }}>
-            <LogoMark size={30} />
-            ScenePick
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, width: "100%" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 19, letterSpacing: "0.01em", color: "#2E2A33", fontWeight: 800 }}>
+              <LogoMark size={30} />
+              ScenePick
+            </div>
+            <StreakBadge count={streak.count} />
           </div>
           <div style={{ display: "flex", gap: 4, background: "#F1E6DA", padding: 6, borderRadius: 16, width: "100%" }}>
             <button className={`tab-btn ${view === "quiz" ? "active" : ""}`} style={{ flex: 1 }} onClick={() => setView("quiz")}>Discover</button>
@@ -696,11 +1125,24 @@ export default function App() {
 
         {view === "quiz" && !showResults && !loading && (
           <>
+            {tasteCheckOpen && (
+              <TasteCheck
+                onClose={() => setTasteCheckOpen(false)}
+                onApplied={() => setTasteProfile(getTasteProfile())}
+              />
+            )}
             <div style={{ display: "flex", gap: 5, marginBottom: 28 }}>
               {STEPS.map((s, i) => <div key={s} style={{ height: 4, flex: 1, borderRadius: 3, background: i <= step ? "#FF6B4A" : "#EFE3D8" }} />)}
             </div>
-            <div style={{ fontSize: 12, color: "#B5A896", marginBottom: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-              Step {step + 1} of {STEPS.length}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: "#B5A896", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                Step {step + 1} of {STEPS.length}
+              </div>
+              {step === 0 && !tasteCheckOpen && (
+                <button onClick={() => setTasteCheckOpen(true)} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>
+                  🎯 Rate a few movies
+                </button>
+              )}
             </div>
 
             {key === "type" && (<>
@@ -803,7 +1245,8 @@ export default function App() {
                     {m.type} · {m.year} · {m.genres.join(", ") || "—"}
                   </div>
                   <RatingBadges rating={m.tmdbVote ? Math.round(m.tmdbVote * 10) / 10 : null} />
-                  <div style={{ fontSize: 13, lineHeight: 1.5, color: "#6B6472", marginTop: 8 }}>{m.overview}</div>
+                  <SpoilerSafeOverview overview={m.overview} releaseDate={m.releaseDate} />
+                  <WatchProviders tmdbId={m.tmdbId} type={m.type} />
                   <button onClick={() => openSimilar(m)} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 12, padding: 0, marginTop: 10, cursor: "pointer" }}>
                     {similarOpenFor === m.tmdbId ? "Hide similar ▲" : "Similar titles ▼"}
                   </button>
@@ -858,6 +1301,14 @@ export default function App() {
 
         {view === "watchlist" && (
           <div>
+            <OnThisDayBanner items={onThisDayItems} />
+            {notifSupported && (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FFFFFF", borderRadius: 14, padding: "12px 14px", marginBottom: 16, boxShadow: "0 3px 14px rgba(46,42,51,0.06)" }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#6B6472" }}>🔔 Daily reminder for tonight's pick</span>
+                <button className={`small-btn ${notifOn ? "added" : ""}`} onClick={toggleNotifications}>{notifOn ? "On" : "Off"}</button>
+              </div>
+            )}
+            <GroupPick watchlist={watchlist} isInWatchlist={isInWatchlist} addToWatchlist={addToWatchlist} />
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <h1 style={{ fontSize: 26, fontWeight: 800, margin: 0 }}>My List</h1>
               {watchlist.length > 1 && (
@@ -920,6 +1371,10 @@ export default function App() {
                     {m.type} · {m.year} · {(m.genres || []).join(", ") || "—"}
                   </div>
                   <RatingBadges rating={m.tmdbVote ? Math.round(m.tmdbVote * 10) / 10 : null} />
+                  {m.type === "Series" && !m.watched && (
+                    <EpisodeTracker item={m} onUpdate={(progress) => updateEpisodeProgress(m.tmdbId, progress)} />
+                  )}
+                  <WatchProviders tmdbId={m.tmdbId} type={m.type} />
                   <OverallRating value={m.myRating || 0} onChange={(v) => setMyRating(m.tmdbId, v)} />
                   <CommentsSection tmdbId={m.tmdbId} type={m.type} />
                 </div>
