@@ -40,33 +40,6 @@ export async function fetchWatchProviders({ tmdbKey, tmdbId, kind }) {
 
 export const PROVIDER_LOGO_BASE = "https://image.tmdb.org/t/p/w92";
 
-const seasonCache = {};
-
-// Returns { episodeCount, episodes: [{episode_number, name, air_date}] } for one season of a
-// TV show, used to know when to roll over to the next season during episode tracking.
-export async function fetchSeasonDetails({ tmdbKey, tmdbId, seasonNumber }) {
-  const cacheKey = `${tmdbId}-${seasonNumber}`;
-  if (seasonCache[cacheKey] !== undefined) return seasonCache[cacheKey];
-  try {
-    const res = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasonNumber}?api_key=${tmdbKey}&language=en-US`);
-    if (!res.ok) { seasonCache[cacheKey] = null; return null; }
-    const data = await res.json();
-    const result = {
-      episodeCount: (data.episodes || []).length,
-      episodes: (data.episodes || []).map((e) => ({
-        episodeNumber: e.episode_number,
-        name: e.name,
-        airDate: e.air_date,
-      })),
-    };
-    seasonCache[cacheKey] = result;
-    return result;
-  } catch (e) {
-    seasonCache[cacheKey] = null;
-    return null;
-  }
-}
-
 // A handful of well-known, popular movies used to bootstrap a taste profile. Pulled live from
 // TMDB's "popular" endpoint (movies only — easiest for people to have an opinion on) rather than
 // niche titles, since the whole point is "have you seen this?".

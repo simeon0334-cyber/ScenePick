@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { db, getUid } from "./firebase";
 import { collection, query, where, orderBy, limit, getDocs, addDoc, serverTimestamp } from "firebase/firestore";
-import { fetchWatchProviders, PROVIDER_LOGO_BASE, fetchSeasonDetails, fetchTasteCandidates } from "./lib/tmdbExtra";
+import { fetchWatchProviders, PROVIDER_LOGO_BASE, fetchTasteCandidates } from "./lib/tmdbExtra";
 import { bumpStreak, getTasteProfile, recordTasteRating, getNotifPref, setNotifPref } from "./lib/localData";
 import { isNotificationSupported, requestNotificationPermission, scheduleDailyReminder, cancelDailyReminder } from "./lib/notifications";
 import { createGroup, joinGroup, updateMyGroupList, subscribeGroup, computeGroupMatches } from "./lib/group";
@@ -380,51 +380,6 @@ function SpoilerSafeOverview({ overview, releaseDate }) {
   );
 }
 
-function EpisodeTracker({ item, onUpdate }) {
-  const [loadingNext, setLoadingNext] = useState(false);
-  const progress = item.progress || { season: 1, episode: 0 };
-
-  const markNextWatched = async () => {
-    setLoadingNext(true);
-    try {
-      const season = await fetchSeasonDetails({ tmdbKey: TMDB_KEY, tmdbId: item.tmdbId, seasonNumber: progress.season });
-      const episodeCount = season ? season.episodeCount : null;
-      let next = { season: progress.season, episode: progress.episode + 1 };
-      if (episodeCount && next.episode > episodeCount) {
-        next = { season: progress.season + 1, episode: 1 };
-      }
-      onUpdate(next);
-    } finally {
-      setLoadingNext(false);
-    }
-  };
-
-  const adjustSeason = (delta) => {
-    const season = Math.max(1, progress.season + delta);
-    onUpdate({ season, episode: 0 });
-  };
-
-  return (
-    <div style={{ marginTop: 10, background: "#FFF9F3", borderRadius: 10, padding: "8px 12px" }}>
-      <div style={{ fontSize: 10, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
-        Episode progress
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, fontWeight: 800, color: "#2E2A33" }}>
-          {progress.episode > 0 ? `Season ${progress.season} · Episode ${progress.episode}` : `Ready to start Season ${progress.season}`}
-        </span>
-        <div style={{ display: "flex", gap: 6 }}>
-          <button className="small-btn" onClick={() => adjustSeason(-1)} disabled={progress.season <= 1}>Prev season</button>
-          <button className="small-btn" onClick={() => adjustSeason(1)}>Next season</button>
-          <button className="small-btn added" disabled={loadingNext} onClick={markNextWatched}>
-            {loadingNext ? "…" : "+ Watched episode"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function StreakBadge({ count }) {
   if (!count || count < 2) return null;
   return (
@@ -718,6 +673,7 @@ function GroupPick({ watchlist, isInWatchlist, addToWatchlist }) {
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
   const [pick, setPick] = useState(null);
+  const [open, setOpen] = useState(false);
   const unsubRef = useRef(null);
 
   const unwatched = watchlist.filter((w) => !w.watched);
@@ -784,11 +740,22 @@ function GroupPick({ watchlist, isInWatchlist, addToWatchlist }) {
   const memberCount = groupData ? Object.keys(groupData.members || {}).length : 0;
 
   return (
-    <div style={{ background: "#FFFFFF", borderRadius: 16, padding: 20, marginBottom: 20, boxShadow: "0 3px 14px rgba(46,42,51,0.06)" }}>
-      <div style={{ fontSize: 13, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 14 }}>
-        👥 Pick together
-      </div>
+    <div style={{ background: "#FFFFFF", borderRadius: 16, padding: open ? 20 : "14px 16px", marginBottom: 20, boxShadow: "0 3px 14px rgba(46,42,51,0.06)" }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          border: "none", background: "transparent", padding: 0, width: "100%", cursor: "pointer",
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          marginBottom: open ? 14 : 0,
+        }}
+      >
+        <span style={{ fontSize: 13, fontWeight: 800, color: "#B5A896", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+          👥 Pick together{code && !open ? ` · ${code}` : ""}
+        </span>
+        <span style={{ fontSize: 13, fontWeight: 800, color: "#FF6B4A" }}>{open ? "Hide ▲" : "Open ▼"}</span>
+      </button>
 
+      {open && (<>
       {!code && (
         <div>
           <p style={{ fontSize: 13, color: "#6B6472", lineHeight: 1.6, margin: "0 0 14px" }}>
@@ -842,6 +809,7 @@ function GroupPick({ watchlist, isInWatchlist, addToWatchlist }) {
           )}
         </div>
       )}
+      </>)}
     </div>
   );
 }
@@ -917,8 +885,6 @@ export default function App() {
   const toggleWatched = (id) => saveWatchlist(watchlist.map((w) => (
     w.tmdbId === id ? { ...w, watched: !w.watched, watchedAt: !w.watched ? Date.now() : null } : w
   )));
-  const updateEpisodeProgress = (id, progress) => saveWatchlist(watchlist.map((w) => (w.tmdbId === id ? { ...w, progress } : w)));
-
   // "On this day" — anything marked watched on this month/day in a previous year (±2 days).
   const onThisDayItems = useMemo(() => {
     const today = new Date();
@@ -1371,9 +1337,6 @@ export default function App() {
                     {m.type} · {m.year} · {(m.genres || []).join(", ") || "—"}
                   </div>
                   <RatingBadges rating={m.tmdbVote ? Math.round(m.tmdbVote * 10) / 10 : null} />
-                  {m.type === "Series" && !m.watched && (
-                    <EpisodeTracker item={m} onUpdate={(progress) => updateEpisodeProgress(m.tmdbId, progress)} />
-                  )}
                   <WatchProviders tmdbId={m.tmdbId} type={m.type} />
                   <OverallRating value={m.myRating || 0} onChange={(v) => setMyRating(m.tmdbId, v)} />
                   <CommentsSection tmdbId={m.tmdbId} type={m.type} />
