@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { db, getUid } from "./firebase";
-import { collection, query, where, orderBy, limit, getDocs, addDoc, serverTimestamp } from "firebase/firestore";
+import { collection, query, where, limit, getDocs, addDoc, serverTimestamp } from "firebase/firestore";
 import { fetchWatchProviders, PROVIDER_LOGO_BASE, fetchTasteCandidates } from "./lib/tmdbExtra";
 import { bumpStreak, getTasteProfile, recordTasteRating, getNotifPref, setNotifPref } from "./lib/localData";
 import { isNotificationSupported, requestNotificationPermission, scheduleDailyReminder, cancelDailyReminder } from "./lib/notifications";
@@ -533,10 +533,18 @@ function CommentItem({ c, onReport }) {
   );
 }
 
+// Firestore Timestamp objects expose .toMillis(); a locally-inserted comment (before the
+// server timestamp resolves) has createdAt === null, which should sort as "just now" (newest).
+function commentMillis(createdAt) {
+  if (createdAt && typeof createdAt.toMillis === "function") return createdAt.toMillis();
+  return Date.now();
+}
+
 function CommentsSection({ tmdbId, type }) {
   const [open, setOpen] = useState(false);
   const [comments, setComments] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(null);
   const [text, setText] = useState("");
   const [spoiler, setSpoiler] = useState(false);
   const [nickname, setNickname] = useState(() => localStorage.getItem("scenepick_nickname") || "");
@@ -544,18 +552,27 @@ function CommentsSection({ tmdbId, type }) {
 
   const load = async () => {
     setLoading(true);
+    setLoadError(null);
     try {
+      // Sorted client-side on purpose: combining two where() equality filters with an
+      // orderBy() on a third field requires a composite index to be created manually in the
+      // Firebase console. Without that index Firestore throws (and previously this was only
+      // logged to the console), so comments silently failed to load even though they were
+      // saved correctly. Plain equality filters need no extra index, so this sidesteps the
+      // whole class of problem.
       const q = query(
         collection(db, "comments"),
         where("tmdbId", "==", tmdbId),
         where("type", "==", type),
-        orderBy("createdAt", "desc"),
         limit(50)
       );
       const snap = await getDocs(q);
-      setComments(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      list.sort((a, b) => commentMillis(b.createdAt) - commentMillis(a.createdAt));
+      setComments(list);
     } catch (e) {
       console.error("Failed to load comments", e);
+      setLoadError("Couldn't load comments right now. Please try again in a moment.");
     } finally {
       setLoading(false);
     }
@@ -576,7 +593,9 @@ function CommentsSection({ tmdbId, type }) {
       const uid = getUid();
       const newComment = { tmdbId, type, text: text.trim(), spoiler, nickname: finalNickname, uid, createdAt: serverTimestamp() };
       await addDoc(collection(db, "comments"), newComment);
-      setComments((prev) => [{ ...newComment, id: `local-${Date.now()}` }, ...prev]);
+      // createdAt is null until the server resolves it; commentMillis treats null as "now" so
+      // this still sorts to the top.
+      setComments((prev) => [{ ...newComment, createdAt: null, id: `local-${Date.now()}` }, ...prev]);
       setText("");
       setSpoiler(false);
     } catch (e) {
@@ -633,8 +652,14 @@ function CommentsSection({ tmdbId, type }) {
             </button>
           </div>
           {loading && <p style={{ fontSize: 12, color: "#B5A896" }}>Loading comments…</p>}
-          {!loading && comments.length === 0 && <p style={{ fontSize: 12, color: "#B5A896" }}>No comments yet — be the first.</p>}
-          {comments.map((c) => <CommentItem key={c.id} c={c} onReport={reportComment} />)}
+          {!loading && loadError && (
+            <div>
+              <p style={{ fontSize: 12, color: "#D9534F", fontWeight: 600 }}>{loadError}</p>
+              <button className="small-btn" onClick={load}>Retry</button>
+            </div>
+          )}
+          {!loading && !loadError && comments.length === 0 && <p style={{ fontSize: 12, color: "#B5A896" }}>No comments yet — be the first.</p>}
+          {!loading && !loadError && comments.map((c) => <CommentItem key={c.id} c={c} onReport={reportComment} />)}
         </div>
       )}
     </div>
