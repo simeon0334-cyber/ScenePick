@@ -5,6 +5,7 @@ import { fetchWatchProviders, PROVIDER_LOGO_BASE, fetchTasteCandidates } from ".
 import { bumpStreak, getTasteProfile, recordTasteRating, getNotifPref, setNotifPref } from "./lib/localData";
 import { isNotificationSupported, requestNotificationPermission, scheduleDailyReminder, cancelDailyReminder } from "./lib/notifications";
 import { createGroup, joinGroup, updateMyGroupList, subscribeGroup, computeGroupMatches } from "./lib/group";
+import Mascot from "./Mascot.jsx";
 
 const GENRES = [
   "Action", "Comedy", "Drama", "Thriller", "Horror",
@@ -18,6 +19,17 @@ const MOODS = [
   { id: "short", label: "Something short" },
   { id: "binge", label: "Binge-worthy" },
 ];
+
+const TYPE_ICONS = { either: "🍿", movie: "🎬", series: "📺" };
+const GENRE_ICONS = {
+  Action: "💥", Comedy: "😂", Drama: "🎭", Thriller: "🔪", Horror: "👻",
+  Romance: "💕", "Sci-Fi": "🚀", Animation: "🎨", Crime: "🕵️", Documentary: "📽️",
+};
+const MOOD_ICONS = { light: "☀️", intense: "🔥", emotional: "💧", short: "⏱️", binge: "🛋️" };
+const PACE_ICONS = { slow: "🌙", fast: "⚡", surprise: "🎲" };
+const ERA_ICONS = { classic: "🎞️", "2000s2010s": "📼", recent: "✨", surprise: "🎲" };
+const RUNTIME_ICONS = { short: "⏱️", standard: "🎯", long: "🛋️", surprise: "🎲" };
+const ENDING_ICONS = { happy: "😊", bittersweet: "🥲", open: "🌀", surprise: "🎲" };
 
 const MOVIE_GENRE_IDS = {
   Action: 28, Comedy: 35, Drama: 18, Thriller: 53, Horror: 27,
@@ -474,6 +486,19 @@ function Chip({ active, onClick, children, variant }) {
   return (
     <button onClick={onClick} className={`chip ${variant === "mood" ? "mood-chip" : ""} ${active ? "active" : ""}`}>
       {children}
+    </button>
+  );
+}
+
+function OptionCard({ active, onClick, icon, children, variant }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`option-card ${variant === "mood" ? "mood-card" : ""} ${active ? "active" : ""}`}
+    >
+      <span className="option-card-icon">{icon}</span>
+      <span className="option-card-label">{children}</span>
+      {active && <span className="option-card-check">✓</span>}
     </button>
   );
 }
@@ -1102,23 +1127,68 @@ export default function App() {
   const key = STEPS[step];
 
   return (
-    <div style={{ minHeight: "100vh", background: "#FBF3EC", color: "#2E2A33", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+    <div style={{ minHeight: "100vh", background: "linear-gradient(180deg, #FFE4C2 0%, #FDECDA 26%, #FBF3EC 46%, #FBF3EC 100%)", color: "#2E2A33", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
       <style>{`
         * { box-sizing: border-box; }
         .chip {
           border: 1.5px solid #EAD9C8; background: #FFFFFF; color: #6B6472;
-          padding: 11px 19px; border-radius: 14px; font-size: 14px; font-weight: 600;
+          padding: 11px 19px; border-radius: 999px; font-size: 14px; font-weight: 600;
           letter-spacing: 0.01em; cursor: pointer; transition: all 0.15s ease;
         }
         .chip:hover { border-color: #FF6B4A; color: #2E2A33; }
         .chip.active { background: #FF6B4A; border-color: #FF6B4A; color: #FFFFFF; }
         .mood-chip.active { background: #2F9E8F; border-color: #2F9E8F; color: #FFFFFF; }
+
+        .option-card {
+          position: relative; display: flex; align-items: center; gap: 10px;
+          border: none; background: #FFFFFF; color: #2E2A33;
+          padding: 16px 16px; border-radius: 18px; font-size: 14.5px; font-weight: 700;
+          text-align: left; cursor: pointer; box-shadow: 0 3px 10px rgba(46,42,51,0.06);
+          transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease, color 0.12s ease;
+        }
+        .option-card:hover { transform: translateY(-2px); box-shadow: 0 8px 18px rgba(46,42,51,0.1); }
+        .option-card:active { transform: scale(0.97); }
+        .option-card-icon {
+          display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+          width: 36px; height: 36px; border-radius: 12px; font-size: 18px; background: #FDECDA;
+        }
+        .option-card.active { background: #FF6B4A; color: #FFFFFF; box-shadow: 0 8px 20px rgba(255,107,74,0.35); }
+        .option-card.active .option-card-icon { background: rgba(255,255,255,0.22); }
+        .option-card.mood-card.active { background: #2F9E8F; box-shadow: 0 8px 20px rgba(47,158,143,0.35); }
+        .option-card-check {
+          margin-left: auto; width: 20px; height: 20px; border-radius: 50%; background: rgba(255,255,255,0.28);
+          display: flex; align-items: center; justify-content: center; font-size: 11px; flex-shrink: 0;
+        }
+        .option-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+        .hero-panel {
+          position: relative; overflow: hidden; border-radius: 26px; padding: 22px 20px 20px;
+          background: radial-gradient(120% 140% at 50% -10%, #FFD8A0 0%, #FF9A5A 45%, #FF6B4A 100%);
+          box-shadow: 0 14px 30px rgba(255,107,74,0.28); margin-bottom: 22px;
+        }
+        .hero-glow {
+          position: absolute; left: 50%; top: 6px; transform: translateX(-50%);
+          width: 170px; height: 170px; border-radius: 50%;
+          background: radial-gradient(circle, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0) 70%);
+          pointer-events: none;
+        }
+        .mascot-spot {
+          position: relative; display: flex; align-items: center; justify-content: center;
+        }
+        .mascot-spot::before {
+          content: ""; position: absolute; width: 130%; height: 130%; border-radius: 50%;
+          background: radial-gradient(circle, rgba(255,255,255,0.65) 0%, rgba(255,255,255,0) 68%);
+          z-index: 0;
+        }
+        .mascot-spot.dim::before { background: radial-gradient(circle, rgba(181,168,150,0.25) 0%, rgba(181,168,150,0) 68%); }
+        .mascot-spot > * { position: relative; z-index: 1; }
+
         .nav-btn {
-          border: none; padding: 14px 30px; border-radius: 14px; font-size: 15px;
+          border: none; padding: 15px 30px; border-radius: 999px; font-size: 15px;
           font-weight: 800; letter-spacing: 0.01em; cursor: pointer;
           transition: transform 0.12s ease, opacity 0.12s ease;
         }
-        .nav-btn.primary { background: #FF6B4A; color: #FFFFFF; box-shadow: 0 6px 16px rgba(255,107,74,0.28); }
+        .nav-btn.primary { background: #2E2A33; color: #FFFFFF; box-shadow: 0 8px 18px rgba(46,42,51,0.28); }
         .nav-btn.primary:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
         .nav-btn.primary:not(:disabled):hover { transform: translateY(-1px); }
         .nav-btn.ghost { background: transparent; color: #8A8290; border: 1.5px solid #EAD9C8; }
@@ -1131,21 +1201,62 @@ export default function App() {
         .small-btn.added { background: #2F9E8F; border-color: #2F9E8F; color: #FFFFFF; }
         .small-btn.remove { color: #D9534F; border-color: #F2D6D3; }
         .ticket {
-          position: relative; background: #FFFFFF; border-radius: 16px;
+          position: relative; background: #FFFFFF; border-radius: 22px;
           padding: 16px; margin-bottom: 14px; overflow: hidden;
           display: flex; gap: 14px;
           box-shadow: 0 3px 14px rgba(46,42,51,0.06);
         }
-        .tab-btn { border: none; background: transparent; padding: 12px 10px; border-radius: 12px; font-size: 13px; font-weight: 800; cursor: pointer; color: #B5A896; white-space: nowrap; }
+        .tab-btn { border: none; background: transparent; padding: 12px 10px; border-radius: 999px; font-size: 13px; font-weight: 800; cursor: pointer; color: #B5A896; white-space: nowrap; transition: background 0.15s ease, color 0.15s ease; }
         .tab-btn.active { background: #2E2A33; color: #FFFFFF; }
         .field {
-          width: 100%; padding: 12px 14px; border-radius: 10px; border: 1.5px solid #EAD9C8;
+          width: 100%; padding: 13px 16px; border-radius: 999px; border: 1.5px solid #EAD9C8;
           font-size: 14px; margin-bottom: 14px; font-family: -apple-system, sans-serif;
         }
+        .chip:active { transform: scale(0.95); }
+        .nav-btn.primary:not(:disabled):active { transform: scale(0.95); }
+        .small-btn:active { transform: scale(0.94); }
+
+        @keyframes mascotFloat {
+          0%, 100% { transform: translateY(0) rotate(-2deg); }
+          50% { transform: translateY(-9px) rotate(2deg); }
+        }
+        @keyframes mascotJump {
+          0%, 100% { transform: translateY(0) scaleX(1) scaleY(1); }
+          20% { transform: translateY(2px) scaleX(1.06) scaleY(0.92); }
+          50% { transform: translateY(-22px) scaleX(0.96) scaleY(1.06); }
+          80% { transform: translateY(2px) scaleX(1.05) scaleY(0.93); }
+        }
+        @keyframes mascotSway {
+          0%, 100% { transform: translateY(0) rotate(-3deg); }
+          50% { transform: translateY(-3px) rotate(3deg); }
+        }
+        @keyframes mascotBlink {
+          0%, 92%, 100% { transform: scaleY(1); }
+          96% { transform: scaleY(0.12); }
+        }
+        @keyframes mascotWave {
+          0%, 100% { transform: rotate(0deg); }
+          50% { transform: rotate(-22deg); }
+        }
+        @keyframes mascotShake {
+          0%, 100% { transform: rotate(0deg); }
+          50% { transform: rotate(8deg); }
+        }
+        .mascot { display: inline-block; }
+        .mascot svg { display: block; overflow: visible; }
+        .mascot-float .mascot-body { display: inline-block; animation: mascotFloat 3s ease-in-out infinite; transform-origin: 50% 95%; }
+        .mascot-jump .mascot-body { display: inline-block; animation: mascotJump 1.1s ease-in-out infinite; transform-origin: 50% 100%; }
+        .mascot-sway .mascot-body { display: inline-block; animation: mascotSway 3.6s ease-in-out infinite; transform-origin: 50% 95%; }
+        .mascot-eyes { transform-origin: 100px 130px; animation: mascotBlink 4.2s ease-in-out infinite; }
+        .mascot-wave-arm { transform-origin: 60px 132px; animation: mascotWave 1.4s ease-in-out infinite; }
+        .mascot-wave-hand { transform-origin: 60px 132px; animation: mascotWave 1.4s ease-in-out infinite; }
+        .mascot-shake { transform-origin: center; animation: mascotShake 0.5s ease-in-out infinite; }
+        @keyframes floatIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-in { animation: floatIn 0.35s ease both; }
       `}</style>
 
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "26px 20px 80px" }}>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 28, gap: 14 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 22, gap: 14 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, width: "100%" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 19, letterSpacing: "0.01em", color: "#2E2A33", fontWeight: 800 }}>
               <LogoMark size={30} />
@@ -1153,7 +1264,7 @@ export default function App() {
             </div>
             <StreakBadge count={streak.count} />
           </div>
-          <div style={{ display: "flex", gap: 4, background: "#F1E6DA", padding: 6, borderRadius: 16, width: "100%" }}>
+          <div style={{ display: "flex", gap: 4, background: "#F1E6DA", padding: 6, borderRadius: 999, width: "100%" }}>
             <button className={`tab-btn ${view === "quiz" ? "active" : ""}`} style={{ flex: 1 }} onClick={() => setView("quiz")}>Discover</button>
             <button className={`tab-btn ${view === "search" ? "active" : ""}`} style={{ flex: 1 }} onClick={() => setView("search")}>Search</button>
             <button className={`tab-btn ${view === "watchlist" ? "active" : ""}`} style={{ flex: 1 }} onClick={() => setView("watchlist")}>
@@ -1170,82 +1281,102 @@ export default function App() {
                 onApplied={() => setTasteProfile(getTasteProfile())}
               />
             )}
-            <div style={{ display: "flex", gap: 5, marginBottom: 28 }}>
-              {STEPS.map((s, i) => <div key={s} style={{ height: 4, flex: 1, borderRadius: 3, background: i <= step ? "#FF6B4A" : "#EFE3D8" }} />)}
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-              <div style={{ fontSize: 12, color: "#B5A896", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                Step {step + 1} of {STEPS.length}
+
+            <div className="hero-panel fade-in">
+              <div className="hero-glow" />
+              <div className="mascot-spot" style={{ marginBottom: 4 }}>
+                <Mascot mood={step === 0 ? "wave" : "idle"} size={108} />
               </div>
-              {step === 0 && !tasteCheckOpen && (
-                <button onClick={() => setTasteCheckOpen(true)} style={{ border: "none", background: "transparent", color: "#FF6B4A", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>
-                  🎯 Rate a few movies
-                </button>
-              )}
+              <div style={{ display: "flex", gap: 5, marginTop: 10, marginBottom: 14 }}>
+                {STEPS.map((s, i) => <div key={s} style={{ height: 4, flex: 1, borderRadius: 3, background: i <= step ? "#FFFFFF" : "rgba(255,255,255,0.35)" }} />)}
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.85)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Step {step + 1} of {STEPS.length}
+                </div>
+                {step === 0 && !tasteCheckOpen && (
+                  <button onClick={() => setTasteCheckOpen(true)} style={{ border: "none", background: "rgba(255,255,255,0.22)", color: "#FFFFFF", fontWeight: 700, fontSize: 11, cursor: "pointer", padding: "5px 10px", borderRadius: 999 }}>
+                    🎯 Rate a few movies
+                  </button>
+                )}
+              </div>
+
+              {key === "type" && <h1 style={{ fontSize: 27, fontWeight: 800, margin: 0, lineHeight: 1.15, color: "#FFFFFF" }}>Movie, series, or either?</h1>}
+              {key === "genres" && <h1 style={{ fontSize: 27, fontWeight: 800, margin: 0, lineHeight: 1.15, color: "#FFFFFF" }}>Pick a few genres</h1>}
+              {key === "moods" && <h1 style={{ fontSize: 27, fontWeight: 800, margin: 0, lineHeight: 1.15, color: "#FFFFFF" }}>What mood are you after?</h1>}
+              {key === "pace" && (<>
+                <h1 style={{ fontSize: 27, fontWeight: 800, margin: 0, lineHeight: 1.15, color: "#FFFFFF" }}>Slow-burn or fast-paced?</h1>
+                <p style={{ fontSize: 13, color: "rgba(255,255,255,0.85)", margin: "6px 0 0", fontWeight: 600 }}>Pick one, both, or let us surprise you.</p>
+              </>)}
+              {key === "era" && (<>
+                <h1 style={{ fontSize: 27, fontWeight: 800, margin: 0, lineHeight: 1.15, color: "#FFFFFF" }}>Any preferred era?</h1>
+                <p style={{ fontSize: 13, color: "rgba(255,255,255,0.85)", margin: "6px 0 0", fontWeight: 600 }}>Pick one, mix a couple, or let us surprise you.</p>
+              </>)}
+              {key === "runtime" && (<>
+                <h1 style={{ fontSize: 27, fontWeight: 800, margin: 0, lineHeight: 1.15, color: "#FFFFFF" }}>How much time do you have?</h1>
+                <p style={{ fontSize: 13, color: "rgba(255,255,255,0.85)", margin: "6px 0 0", fontWeight: 600 }}>Applies to movies — pick one, mix, or surprise us.</p>
+              </>)}
+              {key === "ending" && (<>
+                <h1 style={{ fontSize: 27, fontWeight: 800, margin: 0, lineHeight: 1.15, color: "#FFFFFF" }}>How should it end?</h1>
+                <p style={{ fontSize: 13, color: "rgba(255,255,255,0.85)", margin: "6px 0 0", fontWeight: 600 }}>Helps us fine-tune future recommendations.</p>
+              </>)}
             </div>
 
-            {key === "type" && (<>
-              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 24px", lineHeight: 1.15 }}>Movie, series, or either?</h1>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {key === "type" && (
+              <div className="option-grid">
                 {[{ id: "either", l: "Either" }, { id: "movie", l: "Movie" }, { id: "series", l: "Series" }].map((o) => (
-                  <Chip key={o.id} active={prefs.type === o.id} onClick={() => setPrefs((p) => ({ ...p, type: o.id }))}>{o.l}</Chip>
+                  <OptionCard key={o.id} icon={TYPE_ICONS[o.id]} active={prefs.type === o.id} onClick={() => setPrefs((p) => ({ ...p, type: o.id }))}>{o.l}</OptionCard>
                 ))}
               </div>
-            </>)}
+            )}
 
-            {key === "genres" && (<>
-              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 24px", lineHeight: 1.15 }}>Pick a few genres</h1>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {GENRES.map((g) => <Chip key={g} active={prefs.genres.includes(g)} onClick={() => toggleGenre(g)}>{g}</Chip>)}
-              </div>
-            </>)}
-
-            {key === "moods" && (<>
-              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 24px", lineHeight: 1.15 }}>What mood are you after?</h1>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {MOODS.map((m) => <Chip key={m.id} variant="mood" active={prefs.moods.includes(m.id)} onClick={() => toggleMood(m.id)}>{m.label}</Chip>)}
-              </div>
-            </>)}
-
-            {key === "pace" && (<>
-              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 8px", lineHeight: 1.15 }}>Slow-burn or fast-paced?</h1>
-              <p style={{ fontSize: 13, color: "#B5A896", margin: "0 0 20px", fontWeight: 600 }}>Pick one, both, or let us surprise you.</p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {[{ id: "slow", l: "Slow-burn, atmospheric" }, { id: "fast", l: "Fast-paced" }, { id: "surprise", l: "🎲 Surprise me" }].map((o) => (
-                  <Chip key={o.id} active={prefs.pace.includes(o.id)} onClick={() => toggleSurprisable("pace", o.id)}>{o.l}</Chip>
+            {key === "genres" && (
+              <div className="option-grid">
+                {GENRES.map((g) => (
+                  <OptionCard key={g} icon={GENRE_ICONS[g]} active={prefs.genres.includes(g)} onClick={() => toggleGenre(g)}>{g}</OptionCard>
                 ))}
               </div>
-            </>)}
+            )}
 
-            {key === "era" && (<>
-              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 8px", lineHeight: 1.15 }}>Any preferred era?</h1>
-              <p style={{ fontSize: 13, color: "#B5A896", margin: "0 0 20px", fontWeight: 600 }}>Pick one, mix a couple, or let us surprise you.</p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {[{ id: "classic", l: "Classic (pre-2000)" }, { id: "2000s2010s", l: "2000s–2010s" }, { id: "recent", l: "Recent (2020+)" }, { id: "surprise", l: "🎲 Surprise me" }].map((o) => (
-                  <Chip key={o.id} active={prefs.era.includes(o.id)} onClick={() => toggleSurprisable("era", o.id)}>{o.l}</Chip>
+            {key === "moods" && (
+              <div className="option-grid">
+                {MOODS.map((m) => (
+                  <OptionCard key={m.id} variant="mood" icon={MOOD_ICONS[m.id]} active={prefs.moods.includes(m.id)} onClick={() => toggleMood(m.id)}>{m.label}</OptionCard>
                 ))}
               </div>
-            </>)}
+            )}
 
-            {key === "runtime" && (<>
-              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 8px", lineHeight: 1.15 }}>How much time do you have?</h1>
-              <p style={{ fontSize: 13, color: "#B5A896", margin: "0 0 20px", fontWeight: 600 }}>Applies to movies — pick one, mix, or surprise us.</p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {[{ id: "short", l: "Quick (~90 min)" }, { id: "standard", l: "Standard length" }, { id: "long", l: "Long, immersive" }, { id: "surprise", l: "🎲 Surprise me" }].map((o) => (
-                  <Chip key={o.id} active={prefs.runtime.includes(o.id)} onClick={() => toggleSurprisable("runtime", o.id)}>{o.l}</Chip>
+            {key === "pace" && (
+              <div className="option-grid">
+                {[{ id: "slow", l: "Slow-burn, atmospheric" }, { id: "fast", l: "Fast-paced" }, { id: "surprise", l: "Surprise me" }].map((o) => (
+                  <OptionCard key={o.id} icon={PACE_ICONS[o.id]} active={prefs.pace.includes(o.id)} onClick={() => toggleSurprisable("pace", o.id)}>{o.l}</OptionCard>
                 ))}
               </div>
-            </>)}
+            )}
 
-            {key === "ending" && (<>
-              <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 8px", lineHeight: 1.15 }}>How should it end?</h1>
-              <p style={{ fontSize: 13, color: "#B5A896", margin: "0 0 20px", fontWeight: 600 }}>Helps us fine-tune future recommendations.</p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {[{ id: "happy", l: "Happy ending, please" }, { id: "bittersweet", l: "Bittersweet is fine" }, { id: "open", l: "Open-ended" }, { id: "surprise", l: "🎲 Surprise me" }].map((o) => (
-                  <Chip key={o.id} active={prefs.ending.includes(o.id)} onClick={() => toggleSurprisable("ending", o.id)}>{o.l}</Chip>
+            {key === "era" && (
+              <div className="option-grid">
+                {[{ id: "classic", l: "Classic (pre-2000)" }, { id: "2000s2010s", l: "2000s–2010s" }, { id: "recent", l: "Recent (2020+)" }, { id: "surprise", l: "Surprise me" }].map((o) => (
+                  <OptionCard key={o.id} icon={ERA_ICONS[o.id]} active={prefs.era.includes(o.id)} onClick={() => toggleSurprisable("era", o.id)}>{o.l}</OptionCard>
                 ))}
               </div>
-            </>)}
+            )}
+
+            {key === "runtime" && (
+              <div className="option-grid">
+                {[{ id: "short", l: "Quick (~90 min)" }, { id: "standard", l: "Standard length" }, { id: "long", l: "Long, immersive" }, { id: "surprise", l: "Surprise me" }].map((o) => (
+                  <OptionCard key={o.id} icon={RUNTIME_ICONS[o.id]} active={prefs.runtime.includes(o.id)} onClick={() => toggleSurprisable("runtime", o.id)}>{o.l}</OptionCard>
+                ))}
+              </div>
+            )}
+
+            {key === "ending" && (
+              <div className="option-grid">
+                {[{ id: "happy", l: "Happy ending, please" }, { id: "bittersweet", l: "Bittersweet is fine" }, { id: "open", l: "Open-ended" }, { id: "surprise", l: "Surprise me" }].map((o) => (
+                  <OptionCard key={o.id} icon={ENDING_ICONS[o.id]} active={prefs.ending.includes(o.id)} onClick={() => toggleSurprisable("ending", o.id)}>{o.l}</OptionCard>
+                ))}
+              </div>
+            )}
 
             <div style={{ display: "flex", gap: 10, marginTop: 36 }}>
               {step > 0 && <button className="nav-btn ghost" onClick={goBack}>Back</button>}
@@ -1257,7 +1388,12 @@ export default function App() {
         )}
 
         {loading && (
-          <div style={{ padding: "60px 0", textAlign: "center", color: "#B5A896", fontWeight: 700 }}>Finding your picks…</div>
+          <div className="fade-in" style={{ padding: "40px 0 60px", textAlign: "center" }}>
+            <div className="mascot-spot" style={{ margin: "0 auto", width: 130, height: 130 }}>
+              <Mascot mood="search" size={130} />
+            </div>
+            <div style={{ marginTop: 6, color: "#B5A896", fontWeight: 700 }}>Finding your picks…</div>
+          </div>
         )}
 
         {error && (
@@ -1269,7 +1405,10 @@ export default function App() {
 
         {!loading && !error && view === "quiz" && showResults && (
           <div>
-            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 20px" }}>Your picks 🍿</h1>
+            <div className="fade-in mascot-spot" style={{ margin: "0 auto 4px", width: 92, height: 92 }}>
+              <Mascot mood="celebrate" size={92} />
+            </div>
+            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 20px", textAlign: "center" }}>Your picks 🍿</h1>
             {results.map((m) => (
               <div key={m.tmdbId} className="ticket">
                 <Poster posterPath={m.posterPath} title={m.title} />
@@ -1361,9 +1500,14 @@ export default function App() {
             </div>
             {!watchlistLoaded && <p style={{ color: "#B5A896", fontWeight: 600 }}>Loading…</p>}
             {watchlistLoaded && watchlist.length === 0 && (
-              <p style={{ color: "#B5A896", fontWeight: 600, lineHeight: 1.6 }}>
-                Nothing here yet. Go to "Discover" or "Search" and tap "+ My List" to save titles here.
-              </p>
+              <div className="fade-in" style={{ textAlign: "center", padding: "20px 0 8px" }}>
+                <div className="mascot-spot dim" style={{ margin: "0 auto", width: 100, height: 100 }}>
+                  <Mascot mood="empty" size={100} />
+                </div>
+                <p style={{ color: "#B5A896", fontWeight: 600, lineHeight: 1.6, marginTop: 4 }}>
+                  Nothing here yet. Go to "Discover" or "Search" and tap "+ My List" to save titles here.
+                </p>
+              </div>
             )}
             {watchlistLoaded && watchlist.some((w) => !w.watched) && (
               <button
