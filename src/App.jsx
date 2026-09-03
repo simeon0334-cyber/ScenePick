@@ -5,7 +5,6 @@ import { fetchWatchProviders, PROVIDER_LOGO_BASE, fetchTasteCandidates } from ".
 import { bumpStreak, getTasteProfile, recordTasteRating, getNotifPref, setNotifPref } from "./lib/localData";
 import { isNotificationSupported, requestNotificationPermission, scheduleDailyReminder, cancelDailyReminder } from "./lib/notifications";
 import { createGroup, joinGroup, updateMyGroupList, subscribeGroup, computeGroupMatches } from "./lib/group";
-import Mascot from "./Mascot.jsx";
 
 const GENRES = [
   "Action", "Comedy", "Drama", "Thriller", "Horror",
@@ -1143,47 +1142,6 @@ export default function App() {
           width: 100%; padding: 12px 14px; border-radius: 10px; border: 1.5px solid #EAD9C8;
           font-size: 14px; margin-bottom: 14px; font-family: -apple-system, sans-serif;
         }
-        .chip:active { transform: scale(0.95); }
-        .nav-btn.primary:not(:disabled):active { transform: scale(0.95); }
-        .small-btn:active { transform: scale(0.94); }
-
-        @keyframes mascotFloat {
-          0%, 100% { transform: translateY(0) rotate(-2deg); }
-          50% { transform: translateY(-9px) rotate(2deg); }
-        }
-        @keyframes mascotJump {
-          0%, 100% { transform: translateY(0) scaleX(1) scaleY(1); }
-          20% { transform: translateY(2px) scaleX(1.06) scaleY(0.92); }
-          50% { transform: translateY(-22px) scaleX(0.96) scaleY(1.06); }
-          80% { transform: translateY(2px) scaleX(1.05) scaleY(0.93); }
-        }
-        @keyframes mascotSway {
-          0%, 100% { transform: translateY(0) rotate(-3deg); }
-          50% { transform: translateY(-3px) rotate(3deg); }
-        }
-        @keyframes mascotBlink {
-          0%, 92%, 100% { transform: scaleY(1); }
-          96% { transform: scaleY(0.12); }
-        }
-        @keyframes mascotWave {
-          0%, 100% { transform: rotate(0deg); }
-          50% { transform: rotate(-22deg); }
-        }
-        @keyframes mascotShake {
-          0%, 100% { transform: rotate(0deg); }
-          50% { transform: rotate(8deg); }
-        }
-        .mascot { display: inline-block; }
-        .mascot svg { display: block; overflow: visible; }
-        .mascot-float .mascot-body { display: inline-block; animation: mascotFloat 3s ease-in-out infinite; transform-origin: 50% 95%; }
-        .mascot-jump .mascot-body { display: inline-block; animation: mascotJump 1.1s ease-in-out infinite; transform-origin: 50% 100%; }
-        .mascot-sway .mascot-body { display: inline-block; animation: mascotSway 3.6s ease-in-out infinite; transform-origin: 50% 95%; }
-        .mascot-eyes { transform-origin: 100px 130px; animation: mascotBlink 4.2s ease-in-out infinite; }
-        .mascot-wave-arm { transform-origin: 60px 132px; animation: mascotWave 1.4s ease-in-out infinite; }
-        .mascot-wave-hand { transform-origin: 60px 132px; animation: mascotWave 1.4s ease-in-out infinite; }
-        .mascot-shake { transform-origin: center; animation: mascotShake 0.5s ease-in-out infinite; }
-        @keyframes floatIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-        .fade-in { animation: floatIn 0.35s ease both; }
       `}</style>
 
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "26px 20px 80px" }}>
@@ -1212,9 +1170,6 @@ export default function App() {
                 onApplied={() => setTasteProfile(getTasteProfile())}
               />
             )}
-            <div className="fade-in" style={{ display: "flex", justifyContent: "center", marginBottom: 6 }}>
-              <Mascot mood={step === 0 ? "wave" : "idle"} size={104} />
-            </div>
             <div style={{ display: "flex", gap: 5, marginBottom: 28 }}>
               {STEPS.map((s, i) => <div key={s} style={{ height: 4, flex: 1, borderRadius: 3, background: i <= step ? "#FF6B4A" : "#EFE3D8" }} />)}
             </div>
@@ -1302,10 +1257,7 @@ export default function App() {
         )}
 
         {loading && (
-          <div className="fade-in" style={{ padding: "40px 0 60px", textAlign: "center" }}>
-            <Mascot mood="search" size={130} style={{ margin: "0 auto" }} />
-            <div style={{ marginTop: 6, color: "#B5A896", fontWeight: 700 }}>Finding your picks…</div>
-          </div>
+          <div style={{ padding: "60px 0", textAlign: "center", color: "#B5A896", fontWeight: 700 }}>Finding your picks…</div>
         )}
 
         {error && (
@@ -1317,10 +1269,7 @@ export default function App() {
 
         {!loading && !error && view === "quiz" && showResults && (
           <div>
-            <div className="fade-in" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginBottom: 4 }}>
-              <Mascot mood="celebrate" size={92} />
-            </div>
-            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 20px", textAlign: "center" }}>Your picks 🍿</h1>
+            <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 20px" }}>Your picks 🍿</h1>
             {results.map((m) => (
               <div key={m.tmdbId} className="ticket">
                 <Poster posterPath={m.posterPath} title={m.title} />
@@ -1412,12 +1361,9 @@ export default function App() {
             </div>
             {!watchlistLoaded && <p style={{ color: "#B5A896", fontWeight: 600 }}>Loading…</p>}
             {watchlistLoaded && watchlist.length === 0 && (
-              <div className="fade-in" style={{ textAlign: "center", padding: "20px 0 8px" }}>
-                <Mascot mood="empty" size={100} style={{ margin: "0 auto" }} />
-                <p style={{ color: "#B5A896", fontWeight: 600, lineHeight: 1.6, marginTop: 4 }}>
-                  Nothing here yet. Go to "Discover" or "Search" and tap "+ My List" to save titles here.
-                </p>
-              </div>
+              <p style={{ color: "#B5A896", fontWeight: 600, lineHeight: 1.6 }}>
+                Nothing here yet. Go to "Discover" or "Search" and tap "+ My List" to save titles here.
+              </p>
             )}
             {watchlistLoaded && watchlist.some((w) => !w.watched) && (
               <button
