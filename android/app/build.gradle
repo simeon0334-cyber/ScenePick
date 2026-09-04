@@ -1,5 +1,11 @@
 apply plugin: 'com.android.application'
 
+def releaseKeystorePath = System.getenv("SCENEPICK_KEYSTORE_PATH")
+def releaseStorePassword = System.getenv("SCENEPICK_KEYSTORE_PASSWORD")
+def releaseKeyAlias = System.getenv("SCENEPICK_KEY_ALIAS")
+def releaseKeyPassword = System.getenv("SCENEPICK_KEY_PASSWORD")
+def hasReleaseSigning = [releaseKeystorePath, releaseStorePassword, releaseKeyAlias, releaseKeyPassword].every { it != null && !it.trim().isEmpty() }
+
 android {
     namespace = "com.scenepick.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +13,8 @@ android {
         applicationId "com.scenepick.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode (System.getenv("VERSION_CODE") ?: "1").toInteger()
+        versionName (System.getenv("VERSION_NAME") ?: "1.0")
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -18,12 +24,11 @@ android {
     }
     signingConfigs {
         release {
-            def keystorePath = System.getenv("SCENEPICK_KEYSTORE_PATH")
-            if (keystorePath != null) {
-                storeFile file(keystorePath)
-                storePassword System.getenv("SCENEPICK_KEYSTORE_PASSWORD")
-                keyAlias System.getenv("SCENEPICK_KEY_ALIAS")
-                keyPassword System.getenv("SCENEPICK_KEY_PASSWORD")
+            if (hasReleaseSigning) {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
             }
         }
     }
@@ -31,7 +36,9 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.release
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 }
