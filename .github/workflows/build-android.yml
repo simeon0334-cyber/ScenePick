@@ -41,6 +41,9 @@ jobs:
         run: |
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/scenepick-upload.jks"
 
+      - name: Make Gradle wrapper executable
+        run: chmod +x android/gradlew
+
       - name: Build signed Release AAB
         working-directory: android
         env:
