@@ -2,6 +2,18 @@ name: Build Android Release
 
 on:
   workflow_dispatch:
+    inputs:
+      version_code:
+        description: "Version code"
+        required: true
+        type: string
+        default: "2"
+
+      version_name:
+        description: "Version name"
+        required: true
+        type: string
+        default: "1.0.1"
 
 jobs:
   build:
@@ -30,7 +42,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
 
       - name: Sync Capacitor
         run: npx cap sync android
@@ -51,10 +63,12 @@ jobs:
           SCENEPICK_KEYSTORE_PASSWORD: ${{ secrets.SCENEPICK_KEYSTORE_PASSWORD }}
           SCENEPICK_KEY_ALIAS: ${{ secrets.SCENEPICK_KEY_ALIAS }}
           SCENEPICK_KEY_PASSWORD: ${{ secrets.SCENEPICK_KEY_PASSWORD }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ inputs.version_name }}
         run: ./gradlew bundleRelease
 
       - name: Upload Release AAB
         uses: actions/upload-artifact@v4
         with:
-          name: scenepick-release-aab
+          name: scenepick-release-aab-v${{ inputs.version_code }}
           path: android/app/build/outputs/bundle/release/app-release.aab
